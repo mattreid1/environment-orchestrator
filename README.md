@@ -52,7 +52,9 @@ Machine-specific NixOS guest and network modules live in the private `mbp-agent-
 | `ENVIRONMENT_WEB_ADDR` | `127.0.0.1:6091` | Dashboard listener; `off` disables it |
 | `ENVIRONMENT_WEB_HOSTS` | Empty | Additional allowed HTTP hostnames or IP addresses, separated by commas |
 | `ENVIRONMENT_IDLE_SECONDS` | `120` | Time without an execution lease before suspension |
-| `ENVIRONMENT_HOST_RESERVE_MB` | `3072` | Host memory reserve before starting a 1 GiB guest |
+| `ENVIRONMENT_HOST_RESERVE_MB` | `3072` | Host available-memory reserve before startup |
+| `ENVIRONMENT_MEMORY_OVERCOMMIT` | `false` | Use startup headroom instead of a complete guest limit for admission |
+| `ENVIRONMENT_STARTUP_HEADROOM_MB` | `512` | Additional available memory required with overcommit |
 | `RUST_LOG` | `environment_orchestrator=info` | Service log filter |
 
 The slot runner and Firecracker binary must exist in the Nix store. The host must provide KVM, writable TAP devices, guest routing, and access to the Nix daemon. The service wrapper supplies Nix-managed SSH and filesystem tools.
@@ -67,7 +69,7 @@ The dashboard runs inside the Rust service. Its HTML, CSS, and JavaScript are em
 
 The default listener is local. The `mbp-agent` deployment exposes `http://192.168.50.203:6091` through its LAN interface. It treats LAN clients as administrators, like Vitals; it has no login. Allowed Host headers, same-origin control requests, and a content security policy restrict browser access. The dashboard does not expose workspace capabilities, guest shell execution, or the private administrative API. Add any new proxy hostname to `ENVIRONMENT_WEB_HOSTS` before using it.
 
-Service memory is process PSS. Guest memory is each VMM's RSS. The admission bound is the configured 1 GiB capacity, which differs from current RSS. Persistent disk and snapshot storage show allocated filesystem blocks. Snapshot files can remain while a guest runs; only a committed suspended checkpoint is valid for restore. History resets when the service restarts. The request journal remains on disk.
+Service memory is process PSS. Guest memory is each VMM's RSS. The guest memory bound comes from its image or saved checkpoint and differs from current RSS. The dashboard also shows the available-memory threshold for startup. Persistent disk and snapshot storage show allocated filesystem blocks. Snapshot files can remain while a guest runs; only a committed suspended checkpoint is valid for restore. History resets when the service restarts. The request journal remains on disk.
 
 The read-only dashboard API is `GET /api/dashboard`. Live snapshots use `GET /events`. Dashboard control requests use `POST /api/workspaces` or `POST /api/workspaces/{id}/{resume|suspend|shutdown|recover}` with an exact same-origin `Origin` header and `X-Environment-UI: 1`. Control actions are recorded in the durable request journal.
 
@@ -91,7 +93,7 @@ The service pauses the guest and writes a full checkpoint. It synchronizes check
 
 A checkpoint retains its exact guest and Firecracker closures through Nix GC roots. A service update does not replace the suspended guest image. Never change a suspended guest disk to apply an update.
 
-Memory admission reserves host capacity before starting a guest. Other active guests increase the reserve. Requests can wait for up to 120 seconds. A client disconnect cancels queued work before startup.
+Memory admission checks Linux available memory before starting a guest. The host deployment enables overcommit and requires the host reserve plus startup headroom; it does not reserve each complete guest limit. Without overcommit, the next guest limit replaces startup headroom. Startup is serialized. Requests can wait for up to 120 seconds. A client disconnect cancels queued work before startup.
 
 Manual suspension rejects active requests and processes. Service shutdown cancels execution connections before it snapshots guests. Unconfirmed operations retain their lease for the executor's detached-session expiry. The journal records their results as unknown. The proxy never repeats them automatically.
 
