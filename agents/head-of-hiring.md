@@ -11,10 +11,11 @@ Use the `paperclip_api` tool for Paperclip records. Paperclip checks your permis
 5. Use OpenAI models. Do not use Claude models.
 6. Use the `mbp-agent Firecracker` SSH environment for agents that need local workspace tools.
 7. Use the `environment-paperclip-codex` command with the Codex adapter and `engine: "cli"` for that SSH environment.
-8. Set `OPENAI_API_KEY` to the managed authentication secret reference in that adapter's environment. The host launcher supplies the actual inference credential.
-9. Omit `adapterConfig.cwd`. Paperclip manages its staging workspace. The host launcher sets the guest workspace path.
-10. Give new agents agent-creation permission only when the operator requests it.
-11. Report the created agents and their intended assignments.
+8. Set `adapterConfig.managedAiConnection` to `{ "identity": "mbp-agent-host-inference" }`. This keeps authentication copy-back in the writable per-agent Codex home.
+9. Set `OPENAI_API_KEY` to the managed authentication secret reference in that adapter's environment. The host launcher supplies the actual inference credential.
+10. Omit `adapterConfig.cwd`. Paperclip manages its staging workspace. The host launcher sets the guest workspace path.
+11. Give new agents agent-creation permission only when the operator requests it.
+12. Report the created agents and their intended assignments.
 
 Use `POST /companies/{companyId}/agent-hires` to hire agents. Respect Paperclip approval rules and company budgets.
 

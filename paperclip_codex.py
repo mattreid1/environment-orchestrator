@@ -46,9 +46,9 @@ def paperclip_api_origin(configured_origin, supplied_origin, bridge_mode):
     return supplied_origin.rstrip("/")
 
 
-def remove_staged_authentication_marker(home, host_home, run):
-    # This managed launcher never uses Paperclip's staged authentication. Remove
-    # only our marker so Paperclip does not copy it into its shared auth store.
+def validate_staged_authentication_marker(home, host_home, run):
+    # This managed launcher uses only the marker in Paperclip's staged home.
+    # Keep it for adapter teardown, which uses the writable per-agent auth home.
     root = host_home / ".local/share/environment-orchestrator/paperclip-staging/.paperclip-runtime/runs" / run
     directory = Path(home).resolve()
     if not directory.is_relative_to(root.resolve()):
@@ -61,7 +61,6 @@ def remove_staged_authentication_marker(home, host_home, run):
     auth = json.loads(path.read_text())
     if auth.get("OPENAI_API_KEY") != "sk-managed-by-environment-orchestrator" or auth.get("tokens"):
         raise RuntimeError("The managed Paperclip launcher accepts its authentication marker only")
-    path.unlink()
 
 
 def main():
@@ -80,7 +79,7 @@ def main():
                "PAPERCLIP_RUN_ID":run, "PAPERCLIP_API_KEY":key,
                "PAPERCLIP_API_URL":paperclip_api_origin(config["base_url"], os.environ.get("PAPERCLIP_API_URL", ""), os.environ.get("PAPERCLIP_API_BRIDGE_MODE", ""))}
     arguments = arguments_for_managed_codex(sys.argv[1:])
-    remove_staged_authentication_marker(os.environ["CODEX_HOME"], Path.home(), run)
+    validate_staged_authentication_marker(os.environ["CODEX_HOME"], Path.home(), run)
     return codex.main(["--paperclip", company, agent, *arguments], context)
 
 

@@ -81,16 +81,16 @@ class PaperclipTests(unittest.TestCase):
         finally:
             upstream.shutdown();upstream.server_close();thread.join(timeout=2)
 
-    def test_cleanup_removes_only_current_run_authentication_marker(self):
+    def test_staging_validates_only_current_run_authentication_marker(self):
         with tempfile.TemporaryDirectory() as folder:
             home=Path(folder);run='test-run';root=home/'.local/share/environment-orchestrator/paperclip-staging/.paperclip-runtime/runs'/run/'home';root.mkdir(parents=True)
             auth=root/'auth.json';auth.write_text(json.dumps({'OPENAI_API_KEY':'sk-managed-by-environment-orchestrator'}))
-            paperclip_codex.remove_staged_authentication_marker(str(root),home,run)
-            self.assertFalse(auth.exists())
-            auth.write_text(json.dumps({'tokens':{'access_token':'preserve'}}))
-            with self.assertRaises(RuntimeError):paperclip_codex.remove_staged_authentication_marker(str(root),home,run)
+            paperclip_codex.validate_staged_authentication_marker(str(root),home,run)
             self.assertTrue(auth.exists())
-            with self.assertRaises(RuntimeError):paperclip_codex.remove_staged_authentication_marker(folder,home,run)
+            auth.write_text(json.dumps({'tokens':{'access_token':'preserve'}}))
+            with self.assertRaises(RuntimeError):paperclip_codex.validate_staged_authentication_marker(str(root),home,run)
+            self.assertTrue(auth.exists())
+            with self.assertRaises(RuntimeError):paperclip_codex.validate_staged_authentication_marker(folder,home,run)
 
     def test_api_results_do_not_return_credentials(self):
         result=paperclip_mcp.redact({'name':'Visible','token':'hidden','nested':[{'privateKey':'hidden','status':'idle'}]})
