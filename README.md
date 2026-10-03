@@ -103,3 +103,5 @@ Paperclip integration, Browser Use sharing, and NAS backups also remain later wo
 `nix build` runs the Rust safety tests. [Test instructions](tests/README.md) cover the private API, real guest lifecycle, and resource measurements. Real guest checks can suspend, restore, or crash a selected test workspace.
 
 Measure service PSS separately from guest RAM and checkpoint page cache. Cgroup memory includes reclaimable filesystem cache. It does not represent the service process footprint alone.
+
+See [measured Rust results](docs/validation.md) for memory, latency, and live verification.
