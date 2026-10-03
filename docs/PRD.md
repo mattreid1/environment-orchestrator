@@ -29,7 +29,7 @@ Choose the harness from measured resource use and task results. TypeScript Pi is
 
 Required:
 
-- Run harness sessions on the host with OpenAI models through `https://ai.h.mattre.id`. Do not use Claude models.
+- Run ordinary harness sessions on the host with OpenAI models through `https://ai.h.mattre.id`. Frontend SWE agents can use Claude Code with the exact `claude-sonnet-5-5` model when requested.
 - Integrate with Paperclip scheduling, sessions, logs, cancellation, and usage reports.
 - Assign microVMs to workspaces. Restore them before tool execution. Suspend idle environments through snapshots and process termination.
 - Share skills, immutable tooling, and service clients. Isolate writable files, conversations, credentials, and browser sessions.

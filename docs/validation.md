@@ -1,5 +1,6 @@
 # Rust service validation
 
+These initial measurements used the original 1 GiB SWE images. The current deployment uses 3 GiB limits and 64 GiB sparse disks. See [workspace profiles](workspace-profiles.md) for the resource policy.
 Measured on `mbp-agent`, an Intel T2 MacBook Pro running NixOS, on 2026-10-03. The guests use Firecracker 1.16.1 and Codex 0.159.3. Each SWE guest has 1 GiB RAM and two vCPUs.
 
 ## Process memory
@@ -43,3 +44,9 @@ These are local warm-cache measurements. Concurrent snapshot work can delay admi
 - A killed guest required explicit recovery. Recovery preserved saved files and changed its boot identity.
 
 Both workspaces were suspended after the checks. Private evidence remains under `~/Docs/firecracker/` on the deployment host.
+
+## Workspace profile deployment
+
+The 2026-10-03 profile release passed 32 Rust tests, 19 API tests, 10 Claude launcher contract tests, and 26 live dashboard checks. The NixOS deployment has eight slots with 3072 MiB guest limits and 64 GiB sparse disks. Memory overcommit uses a 3072 MiB host reserve plus 512 MiB startup headroom. The three existing workspaces retained all 31 project-file SHA-256 hashes after a clean shutdown, offline disk growth, and cold startup on the new image.
+
+The research guest passed a spreadsheet write/read round trip, DOCX creation, Pandoc HTML conversion, and PDF tool availability. A real Sonnet 5.5 frontend run completed file operations, guest browser interaction, and screenshot inspection with zero tool errors. Frontend cold startup took 6.585 seconds; a subsequent warm restore reached readiness in 99.79 ms, including 80.09 ms for the Firecracker restore API. Full 3 GiB snapshots took 2.02–5.43 seconds in these checks. These are warm-cache measurements, not a cold-cache latency guarantee. All five checked workspaces ended suspended, with no VMM processes.
