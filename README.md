@@ -61,6 +61,8 @@ The slot runner and Firecracker binary must exist in the Nix store. The host mus
 
 The dashboard uses the compact terminal style of Vitals. It provides workspace filters, resume and suspend controls, a workspace inspector, memory admission readings, six minutes of in-memory history, and the last 20 journal entries. It can allocate an unused configured slot. Allocation does not start its guest. Shutdown and recovery require confirmation because they discard the memory session.
 
+Click a workspace name or Details to select it and bring its details into view. The details panel also has a workspace selector and controls for the selected guest. Hover over either graph to read a sample's time and values. Focus a graph and use Left, Right, Home, or End to inspect samples with the keyboard; Escape hides the tooltip. Live updates preserve workspace selection, focused controls, and graph interaction.
+
 The dashboard runs inside the Rust service. Its HTML, CSS, and JavaScript are embedded at build time. It has no frontend server, framework, CDN, or external font dependency. One sampler updates all browsers every two seconds through server-sent events. Observation does not acquire an execution lease, start a guest, or reset its idle timer.
 
 The default listener is local. The `mbp-agent` deployment exposes `http://192.168.50.203:6091` through its LAN interface. It treats LAN clients as administrators, like Vitals; it has no login. Allowed Host headers, same-origin control requests, and a content security policy restrict browser access. The dashboard does not expose workspace capabilities, guest shell execution, or the private administrative API. Add any new proxy hostname to `ENVIRONMENT_WEB_HOSTS` before using it.

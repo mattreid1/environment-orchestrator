@@ -34,15 +34,33 @@
     </section>
     <section class="panel">
       <h2><span class="h">execution</span><span class="meta" id="history-label">live · samples every 2s</span></h2>
-      <div id="execution-chart" class="chart" role="img" aria-label="Recent awake guests, execution leases, and queued requests"></div>
+      <div id="execution-chart" class="chart" role="group" aria-label="Recent awake guests, execution leases, and queued requests"></div>
       <div class="legend"><span class="blue">━</span> awake <b id="legend-awake">—</b><span class="green">━</span> leases <b id="legend-leases">—</b><span class="orange">━</span> queued <b id="legend-queued">—</b></div>
     </section>
     <section class="panel">
       <h2><span class="h">memory admission</span><span class="meta" id="admission-label">host available / reserve + guest bounds</span></h2>
-      <div id="memory-chart" class="chart" role="img" aria-label="Recent host available memory and the startup admission threshold"></div>
+      <div id="memory-chart" class="chart" role="group" aria-label="Recent host available memory and the startup admission threshold"></div>
       <div class="legend"><span class="blue">━</span> available <b id="legend-available">—</b><span class="orange">┄</span> next start requires <b id="legend-required">—</b></div>
     </section>
-    <section class="panel" id="inspector-panel"><h2><span class="h">workspace details</span><span class="meta" id="inspector-id">select a workspace</span></h2><div id="inspector" class="empty">Select a workspace to inspect its persistent disk and checkpoint.</div></section>
+    <section class="panel" id="inspector-panel" tabindex="-1" aria-labelledby="inspector-heading">
+      <h2><span class="h" id="inspector-heading">workspace details</span><span class="workspace-picker"><label for="workspace-select">workspace</label><select id="workspace-select" aria-label="Workspace" disabled><option value="">No workspaces</option></select></span></h2>
+      <p id="inspector-empty" class="empty">Create a workspace to inspect its persistent disk and checkpoint.</p>
+      <div id="inspector" hidden>
+        <div class="detail-grid">
+          <div><div class="k">state / session</div><div class="v" id="detail-state"></div></div>
+          <div><div class="k">guest memory / admission bound</div><div class="v" id="detail-memory"></div></div>
+          <div><div class="k">persistent disk · actual / logical</div><div class="v" id="detail-disk"></div><div class="disk-track"><i id="disk-usage"></i></div></div>
+          <div><div class="k">snapshot files / last snapshot</div><div class="v" id="detail-snapshot"></div></div>
+          <div><div class="k">guest address</div><div class="v" id="detail-address"></div></div>
+          <div><div class="k">idle suspension</div><div class="v" id="detail-idle"></div></div>
+          <div><div class="k">image</div><div class="v" id="detail-image"></div></div>
+          <div><div class="k">wake / restore API</div><div class="v" id="detail-wake"></div></div>
+        </div>
+        <div class="launch"><label for="launch-command" id="launch-label">Start an agent on the host</label><div class="command"><input id="launch-command" readonly aria-label="Host launcher command"><button id="copy-command">Copy</button></div></div>
+        <div class="advanced"><button class="primary" id="control-toggle" data-action="resume">Resume</button><button id="control-shutdown" data-action="shutdown">Shut down</button><button class="danger" id="control-recover" data-action="recover" hidden>Recover saved files</button><span class="dim">shutdown discards the memory session</span></div>
+        <p class="detail-error" id="detail-error" role="status" hidden></p>
+      </div>
+    </section>
     <section class="panel activity-panel"><h2><span class="h">recent requests</span><span class="meta">durable journal · newest first</span></h2><div class="log-wrap"><ol id="activity" class="log"><li class="empty">No requests yet.</li></ol></div></section>
   </main>
   <footer class="status"><span class="tab">0:environments*</span><span id="footer-cpu">self — cpu</span><span id="footer-rss">— RSS</span><span class="grow"></span><a id="vitals-link" href="http://192.168.50.203:5400">vitals</a><a href="/api/dashboard" target="_blank" rel="noopener">api</a><span class="dim" id="port"></span></footer>
