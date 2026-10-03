@@ -36,6 +36,14 @@ class PaperclipTests(unittest.TestCase):
         for path in ['https://evil.test','/companies/other/agents','/agents/../../secrets','/companies/'+COMPANY+'/secrets','/agents/'+COMPANY+'/keys','/auth/sign-in/email']:
             self.assertFalse(paperclip_mcp.allowed_path(path,COMPANY),path)
 
+    def test_callback_credentials_use_only_a_loopback_bridge(self):
+        origin='https://org.h.mattre.id'
+        self.assertEqual(paperclip_codex.paperclip_api_origin(origin,'http://127.0.0.1:49152','queue_v1'),'http://127.0.0.1:49152')
+        self.assertEqual(paperclip_codex.paperclip_api_origin(origin,'https://untrusted.test',''),origin)
+        for supplied in ['https://untrusted.test','http://192.168.50.203:3100','http://user@127.0.0.1:80','http://127.0.0.1:80/api','http://127.0.0.1:80?key=test']:
+            with self.subTest(supplied=supplied),self.assertRaises(RuntimeError):
+                paperclip_codex.paperclip_api_origin(origin,supplied,'queue_v1')
+
     def test_api_results_do_not_return_credentials(self):
         result=paperclip_mcp.redact({'name':'Visible','token':'hidden','nested':[{'privateKey':'hidden','status':'idle'}]})
         self.assertEqual(result,{'name':'Visible','nested':[{'status':'idle'}]})

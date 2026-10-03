@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+from urllib.parse import urlsplit
 import codex
 
 
@@ -34,6 +35,17 @@ def arguments_for_managed_codex(arguments):
     return result
 
 
+def paperclip_api_origin(configured_origin, supplied_origin, bridge_mode):
+    # Remote Paperclip adapters replace the run token with a per-run callback
+    # token. Only their loopback callback server can use that token.
+    if not bridge_mode:
+        return configured_origin.rstrip("/")
+    parsed = urlsplit(supplied_origin)
+    if bridge_mode not in {"queue_v1", "http2_v1"} or parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or not parsed.port or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise RuntimeError("Paperclip callback bridge must use a loopback HTTP origin")
+    return supplied_origin.rstrip("/")
+
+
 def main():
     if sys.argv[1:] in (["--version"], ["-V"]):
         return subprocess.call(["codex", "--version"])
@@ -48,7 +60,7 @@ def main():
         raise RuntimeError("Paperclip company is not enabled on this host")
     context = {"PAPERCLIP_COMPANY_ID":company, "PAPERCLIP_AGENT_ID":agent,
                "PAPERCLIP_RUN_ID":run, "PAPERCLIP_API_KEY":key,
-               "PAPERCLIP_API_URL":config["base_url"].rstrip("/")}
+               "PAPERCLIP_API_URL":paperclip_api_origin(config["base_url"], os.environ.get("PAPERCLIP_API_URL", ""), os.environ.get("PAPERCLIP_API_BRIDGE_MODE", ""))}
     return codex.main(["--paperclip", company, agent, *arguments_for_managed_codex(sys.argv[1:])], context)
 
 

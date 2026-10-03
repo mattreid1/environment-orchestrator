@@ -32,7 +32,7 @@ def allowed_path(path, company):
 def request_api(arguments):
     path = arguments.get("path")
     method = arguments.get("method", "GET")
-    if method not in {"GET", "POST", "PATCH", "DELETE"} or not allowed_path(path, os.environ["PAPERCLIP_COMPANY_ID"]):
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"} or not allowed_path(path, os.environ["PAPERCLIP_COMPANY_ID"]):
         raise ValueError("Unsupported Paperclip API request")
     body = None if method == "GET" else json.dumps(arguments.get("body", {})).encode()
     if body and len(body) > MAX_BYTES:
@@ -62,7 +62,7 @@ def handle(message):
         return {}
     if method == "tools/list":
         return {"tools":[{"name":"paperclip_api", "description":"Read or update Paperclip records for your company. Use paths relative to /api. Paperclip enforces your agent permissions. Use this tool for hiring and task coordination.",
-            "inputSchema":{"type":"object", "properties":{"method":{"type":"string", "enum":["GET","POST","PATCH","DELETE"],"default":"GET"}, "path":{"type":"string"}, "body":{"type":"object"}}, "required":["path"], "additionalProperties":False}}]}
+            "inputSchema":{"type":"object", "properties":{"method":{"type":"string", "enum":["GET","POST","PUT","PATCH","DELETE"],"default":"GET"}, "path":{"type":"string"}, "body":{"type":"object"}}, "required":["path"], "additionalProperties":False}}]}
     if method == "tools/call" and message.get("params", {}).get("name") == "paperclip_api":
         try:
             result = request_api(message["params"].get("arguments", {}))
