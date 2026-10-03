@@ -238,19 +238,28 @@ impl Catalog {
         self.replace(&config, companies)
     }
 
-    fn known(&self, company: &str, agent: &str) -> Result<bool> {
+    fn available(&self, company: &str, agent: &str) -> Result<bool> {
         Ok(self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT 1 FROM agents WHERE company=? AND id=?",
+                "SELECT 1 FROM agents WHERE company=? AND id=? AND present=1 AND status IN ('idle','running','error')",
                 params![company, agent],
                 |_| Ok(()),
             )
             .optional()?
             .is_some())
     }
+    async fn refresh_if_unavailable(&self, company: &str, agent: &str) -> Result<()> {
+        // A pause, deletion, or resume can race the periodic discovery poll.
+        // Refresh unavailable cached records before refusing a new execution.
+        if !self.available(company, agent)? {
+            self.discover(company).await?;
+        }
+        Ok(())
+    }
+
     pub fn new(state: &FsPath) -> Result<Arc<Self>> {
         let db = Connection::open(state.join("paperclip.sqlite"))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
@@ -450,8 +459,10 @@ pub async fn bind(
     if !valid_remote_id(&company) || !valid_remote_id(&agent) {
         return crate::error(StatusCode::BAD_REQUEST, "Invalid Paperclip agent identity");
     }
-    if !catalog.known(&company, &agent).unwrap_or(false)
-        && catalog.discover(&company).await.is_err()
+    if catalog
+        .refresh_if_unavailable(&company, &agent)
+        .await
+        .is_err()
     {
         return crate::error(
             StatusCode::CONFLICT,
@@ -622,5 +633,100 @@ mod tests {
         agent.metadata = json!({"environmentProfile":"unknown"});
         agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":"research"}});
         assert_eq!(agent_profile(&agent), "research");
+    }
+    #[tokio::test]
+    async fn on_demand_refresh_recovers_stale_pause_or_removal_and_keeps_binding() -> Result<()> {
+        use axum::{
+            Router,
+            routing::{get, post},
+        };
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let rows = Arc::new(Mutex::new(
+            json!([{"id":AGENT,"companyId":COMPANY,"name":"Worker","status":"idle","adapterType":"codex_local"}]),
+        ));
+        let logins = Arc::new(AtomicUsize::new(0));
+        let login_count = logins.clone();
+        let remote_rows = rows.clone();
+        let router = Router::new()
+            .route(
+                "/api/auth/sign-in/email",
+                post(move || {
+                    let count = login_count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [("set-cookie", "paperclip-test.session_token=fixture; Path=/")],
+                            Json(json!({"ok":true})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                &format!("/api/companies/{COMPANY}/agents"),
+                get(move || {
+                    let rows = remote_rows.clone();
+                    async move { Json(rows.lock().unwrap().clone()) }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let folder = tempfile::tempdir()?;
+        let login_path = folder.path().join("login.json");
+        fs::write(
+            &login_path,
+            serde_json::to_vec(&json!({"email":"test@example.test","password":"fixture"}))?,
+        )?;
+        fs::set_permissions(&login_path, fs::Permissions::from_mode(0o600))?;
+        let value = json!({"base_url":format!("http://{address}"),"companies":[{"id":COMPANY,"name":"AIME","prefix":"AIME"}],"login_file":login_path});
+        let config = parse_config(value.clone())?;
+        let config_path = folder.path().join("paperclip.json");
+        fs::write(&config_path, serde_json::to_vec(&value)?)?;
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+        let catalog = Catalog::new(folder.path())?;
+        assert!(!catalog.available(COMPANY, AGENT)?);
+        catalog.replace(
+            &config,
+            vec![(config.companies[0].clone(), vec![agent("Worker")])],
+        )?;
+        let workspace = catalog.workspace(COMPANY, AGENT)?;
+        let mut paused = agent("Worker");
+        paused.status = "paused".into();
+        catalog.replace(&config, vec![(config.companies[0].clone(), vec![paused])])?;
+        assert!(!catalog.available(COMPANY, AGENT)?);
+        assert!(catalog.workspace(COMPANY, AGENT).is_err());
+        catalog.refresh_if_unavailable(COMPANY, AGENT).await?;
+        assert!(catalog.available(COMPANY, AGENT)?);
+        assert_eq!(catalog.workspace(COMPANY, AGENT)?, workspace);
+        assert_eq!(logins.load(Ordering::SeqCst), 1);
+        catalog.refresh_if_unavailable(COMPANY, AGENT).await?;
+        assert_eq!(
+            logins.load(Ordering::SeqCst),
+            1,
+            "Healthy cached agents must not log in on each binding"
+        );
+        catalog.replace(&config, vec![])?;
+        catalog.refresh_if_unavailable(COMPANY, AGENT).await?;
+        assert!(catalog.available(COMPANY, AGENT)?);
+        assert_eq!(catalog.workspace(COMPANY, AGENT)?, workspace);
+        assert_eq!(logins.load(Ordering::SeqCst), 2);
+        // A fresh upstream pause must still refuse execution.
+        let mut paused = agent("Worker");
+        paused.status = "paused".into();
+        catalog.replace(&config, vec![(config.companies[0].clone(), vec![paused])])?;
+        (*rows.lock().unwrap())[0]["status"] = json!("paused");
+        catalog.refresh_if_unavailable(COMPANY, AGENT).await?;
+        assert!(!catalog.available(COMPANY, AGENT)?);
+        assert!(catalog.workspace(COMPANY, AGENT).is_err());
+        // A fresh upstream deletion must also refuse while retaining its files.
+        *rows.lock().unwrap() = json!([]);
+        catalog.refresh_if_unavailable(COMPANY, AGENT).await?;
+        assert!(!catalog.available(COMPANY, AGENT)?);
+        assert!(catalog.workspace(COMPANY, AGENT).is_err());
+        assert_eq!(catalog.snapshot()["agents"][0]["workspace_id"], workspace);
+        assert_eq!(logins.load(Ordering::SeqCst), 4);
+        server.abort();
+        Ok(())
     }
 }
