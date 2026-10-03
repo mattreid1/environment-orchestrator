@@ -63,21 +63,40 @@ class PaperclipTests(unittest.TestCase):
                 self.assertEqual([tool['name'] for tool in json.load(response)['result']['tools']],['paperclip_api'])
 
     def test_http_tool_returns_successful_api_results_with_scoped_redaction(self):
+        requests=[]
         class API(BaseHTTPRequestHandler):
             def log_message(self,*args):pass
             def do_GET(self):
+                requests.append((self.command,self.path,self.headers.get('Authorization'),None))
                 self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
                 self.wfile.write(json.dumps({'name':'Hiring','token':'hidden','echo':'scoped-api-credential'}).encode())
+            def do_PATCH(self):
+                payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                requests.append((self.command,self.path,self.headers.get('Authorization'),payload))
+                self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+                self.wfile.write(json.dumps({'status':payload['status']}).encode())
         upstream=ThreadingHTTPServer(('127.0.0.1',0),API)
         thread=threading.Thread(target=upstream.serve_forever,daemon=True);thread.start()
         try:
             context={'PAPERCLIP_API_URL':f'http://127.0.0.1:{upstream.server_address[1]}','PAPERCLIP_API_KEY':'scoped-api-credential','PAPERCLIP_RUN_ID':COMPANY,'PAPERCLIP_COMPANY_ID':COMPANY}
             with paperclip_mcp.http_bridge(context) as bridge:
-                body=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'paperclip_api','arguments':{'path':'/agents/me'}}}).encode()
+                for path in ['/agents/me','agents/me']:
+                    body=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'paperclip_api','arguments':{'path':path}}}).encode()
+                    request=urllib.request.Request(bridge['url'],data=body,headers={'Authorization':'Bearer '+bridge['capability']})
+                    with urllib.request.urlopen(request) as response:result=json.load(response)['result']
+                    self.assertFalse(result.get('isError',False),result)
+                    self.assertEqual(json.loads(result['content'][0]['text']),{'name':'Hiring','echo':'<redacted>'})
+                body=json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'paperclip_api','arguments':{'path':'issues/'+COMPANY,'method':'PATCH','body':{'status':'done'}}}}).encode()
                 request=urllib.request.Request(bridge['url'],data=body,headers={'Authorization':'Bearer '+bridge['capability']})
                 with urllib.request.urlopen(request) as response:result=json.load(response)['result']
                 self.assertFalse(result.get('isError',False),result)
-                self.assertEqual(json.loads(result['content'][0]['text']),{'name':'Hiring','echo':'<redacted>'})
+                self.assertEqual(json.loads(result['content'][0]['text']),{'status':'done'})
+                for path in ['https://evil.test/agents/me','//evil.test/agents/me','companies/other/agents','companies/'+COMPANY+'/secrets','agents/'+COMPANY+'/keys','agents/../../secrets','agents/%2e%2e/secrets']:
+                    body=json.dumps({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'paperclip_api','arguments':{'path':path}}}).encode()
+                    request=urllib.request.Request(bridge['url'],data=body,headers={'Authorization':'Bearer '+bridge['capability']})
+                    with urllib.request.urlopen(request) as response:result=json.load(response)['result']
+                    self.assertTrue(result.get('isError'),path)
+                self.assertEqual(requests,[('GET','/api/agents/me','Bearer scoped-api-credential',None),('GET','/api/agents/me','Bearer scoped-api-credential',None),('PATCH','/api/issues/'+COMPANY,'Bearer scoped-api-credential',{'status':'done'})])
         finally:
             upstream.shutdown();upstream.server_close();thread.join(timeout=2)
 

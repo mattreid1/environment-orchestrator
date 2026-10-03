@@ -38,6 +38,9 @@ def allowed_path(path, company):
 def request_api(arguments, context=None):
     context = os.environ if context is None else context
     path = arguments.get("path")
+    # Tool paths are relative to /api. Both forms use the same allowlist.
+    if isinstance(path, str) and not path.startswith("/"):
+        path = "/" + path
     method = arguments.get("method", "GET")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"} or not allowed_path(path, context["PAPERCLIP_COMPANY_ID"]):
         raise ValueError("Unsupported Paperclip API request")
@@ -68,8 +71,8 @@ def handle(message, context=None):
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools":[{"name":"paperclip_api", "description":"Read or update Paperclip records for your company. Use paths relative to /api. Paperclip enforces your agent permissions. Use this tool for hiring and task coordination.",
-            "inputSchema":{"type":"object", "properties":{"method":{"type":"string", "enum":["GET","POST","PUT","PATCH","DELETE"],"default":"GET"}, "path":{"type":"string"}, "body":{"type":"object"}}, "required":["path"], "additionalProperties":False}}]}
+        return {"tools":[{"name":"paperclip_api", "description":"Read or update Paperclip records for your company. Use a path relative to /api, such as /agents/me or agents/me. Paperclip enforces your agent permissions. Use this tool for hiring and task coordination.",
+            "inputSchema":{"type":"object", "properties":{"method":{"type":"string", "enum":["GET","POST","PUT","PATCH","DELETE"],"default":"GET"}, "path":{"type":"string", "description":"API path without the /api prefix. A leading slash is optional. Full URLs are rejected."}, "body":{"type":"object"}}, "required":["path"], "additionalProperties":False}}]}
     if method == "tools/call" and message.get("params", {}).get("name") == "paperclip_api":
         try:
             result = request_api(message["params"].get("arguments", {}), context)
