@@ -4,11 +4,16 @@ let
   path = pkgs.lib.makeBinPath [ python codex pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
 in pkgs.rustPlatform.buildRustPackage {
   pname = "environment-orchestrator";
-  version = "0.2.0";
+  version = "0.3.0";
   src = ./rust;
   cargoLock.lockFile = ./rust/Cargo.lock;
   nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
   buildInputs = [ pkgs.sqlite ];
+  nativeCheckInputs = [ pkgs.nodejs ];
+  postCheck = ''
+    node --check web/app.js
+    node -e 'const fs = require("node:fs"); for (const match of fs.readFileSync("web/index.html", "utf8").matchAll(/pattern="([^"]*)"/g)) new RegExp(match[1], "v");'
+  '';
   postInstall = ''
     mkdir -p $out/lib/environment-orchestrator
     cp ${./cli.py} $out/lib/environment-orchestrator/cli.py

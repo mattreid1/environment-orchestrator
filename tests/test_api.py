@@ -33,6 +33,9 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
         self.state = self.folder/'state'
         self.attempts = self.folder/'unexpected-vm-starts'
         self.port = free_port()
+        self.web_port = free_port()
+        self.web_url = f'http://127.0.0.1:{self.web_port}'
+        self.web_headers = {'Origin':self.web_url, 'X-Environment-UI':'1'}
         slots = []
         for slot in range(2):
             runner = self.folder/f'runner-{slot}'
@@ -43,6 +46,7 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
             slots.append({'runner':str(runner), 'firecracker':str(script), 'guest_host':'127.0.0.1'})
         self.environment = {**os.environ, 'ENVIRONMENT_STATE':str(self.state),
             'ENVIRONMENT_SLOTS':json.dumps(slots), 'ENVIRONMENT_PORT':str(self.port),
+            'ENVIRONMENT_WEB_ADDR':f'127.0.0.1:{self.web_port}',
             'ENVIRONMENT_IDLE_SECONDS':'0', 'ENVIRONMENT_HOST_RESERVE_MB':'1000000000'}
         self.logfile = (self.folder/'service.log').open('wb')
         self.process = None
@@ -80,7 +84,9 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
             try:
                 async with self.admin.get('http://localhost/workspaces') as response:
                     if response.status == 200:
-                        return
+                        async with self.client.get(self.web_url+'/api/dashboard') as web_response:
+                            if web_response.status == 200:
+                                return
             except (ClientError, OSError):
                 pass
             await asyncio.sleep(.025)
@@ -230,6 +236,106 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.state/'workspaces/alpha/state.ext4').exists())
         # The writer claim must be reusable after the canceled connection.
         await self.connect(binding)
+
+    async def web(self, path='/api/dashboard', method='GET', payload=None, headers=None, expected=200):
+        async with self.client.request(method, self.web_url+path, json=payload,
+            headers=self.web_headers if headers is None else headers) as response:
+            content = await response.text()
+            self.assertEqual(response.status, expected, content)
+            try:
+                return json.loads(content) if content else None
+            except json.JSONDecodeError:
+                return {'error':content}
+
+    async def test_dashboard_and_live_stream_do_not_wake_or_lease_a_workspace(self):
+        binding = await self.allocate()
+        async with self.client.get(self.web_url+'/events') as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn('text/event-stream', response.headers['Content-Type'])
+            snapshots = []
+            while len(snapshots) < 2:
+                line = (await response.content.readline()).decode()
+                if line.startswith('data: '):
+                    snapshots.append(json.loads(line[6:]))
+            row = snapshots[-1]['workspaces'][0]
+            self.assertEqual(row['id'], binding['id'])
+            self.assertIsNone(row['pid'])
+            self.assertFalse(row['writer_connected'])
+            self.assertEqual(row['active_operations'], 0)
+            self.assertEqual(row['queued_operations'], 0)
+            self.assertNotIn(binding['auth_bearer_token'], json.dumps(snapshots))
+        status = await self.api('/workspaces/alpha')
+        self.assertIsNone(status['pid'])
+        self.assertEqual(status['active_operations'], 0)
+        self.assertFalse(self.attempts.exists())
+        self.assertFalse((self.state/'workspaces/alpha/state.ext4').exists())
+
+    async def test_dashboard_creation_redacts_capability_and_preserves_private_binding(self):
+        visible = await self.web('/api/workspaces', method='POST', payload={'id':'alpha'})
+        self.assertNotIn('auth_bearer_token', visible)
+        binding = await self.allocate()
+        self.assertEqual(visible['id'], binding['id'])
+        dashboard = await self.web()
+        self.assertEqual(dashboard['workspaces'][0]['id'], 'alpha')
+        self.assertNotIn(binding['auth_bearer_token'], json.dumps(dashboard))
+        self.assertFalse(self.attempts.exists())
+        await self.web('/api/workspaces', method='POST', payload={'id':'../outside'}, expected=400)
+        await self.web('/api/workspaces', method='POST', payload={'id':'beta'})
+        await self.web('/api/workspaces', method='POST', payload={'id':'gamma'}, expected=409)
+
+    async def test_dashboard_rejects_cross_origin_controls_and_unconfigured_hosts(self):
+        for headers in ({}, {'Origin':'https://untrusted.example', 'X-Environment-UI':'1'},
+            {'Origin':self.web_url}, {**self.web_headers, 'Sec-Fetch-Site':'cross-site'}):
+            await self.web('/api/workspaces', method='POST', payload={'id':'alpha'}, headers=headers, expected=403)
+        await self.web(headers={'Host':'untrusted.example'}, expected=403)
+        self.assertEqual((await self.api())['workspaces'], [])
+
+    async def test_dashboard_does_not_publish_execution_or_private_admin_routes(self):
+        binding = await self.allocate()
+        for path in ('/workspaces', '/workspaces/alpha', '/workspaces/alpha/exec'):
+            await self.web(path, expected=404)
+        await self.web('/api/workspaces/alpha/exec', method='POST', expected=404)
+        async with self.client.get(self.web_url+'/') as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
+            self.assertEqual(response.headers['X-Frame-Options'], 'DENY')
+            self.assertNotIn(binding['auth_bearer_token'], await response.text())
+
+    async def test_dashboard_actions_are_journaled_and_preserve_saved_files(self):
+        await self.allocate()
+        await self.web('/api/workspaces/alpha/suspend', method='POST')
+        dashboard = await self.web()
+        operation = dashboard['recent_operations'][0]
+        self.assertEqual((operation['workspace'], operation['method'], operation['state']),
+            ('alpha', 'workspace/suspend', 'completed'))
+        self.assertIsNotNone(operation['finished'])
+        await self.web('/api/workspaces/missing/suspend', method='POST', expected=404)
+        await self.web('/api/workspaces/alpha/invalid', method='POST', expected=404)
+        self.assertFalse(self.attempts.exists())
+
+    async def test_dashboard_observation_preserves_the_attached_writer_and_its_queue(self):
+        binding = await self.allocate()
+        await self.connect(binding)
+        await self.wait_status('alpha', lambda value: value.get('queued_operations') == 1)
+        async with asyncio.timeout(5):
+            while True:
+                rows = (await self.web())['workspaces']
+                if rows and rows[0]['queued_operations'] == 1:
+                    row = rows[0]
+                    break
+                await asyncio.sleep(.025)
+        self.assertTrue(row['writer_connected'])
+        self.assertEqual(row['active_operations'], 0)
+        self.assertIsNone(row['pid'])
+        self.assertFalse(self.attempts.exists())
+
+    async def test_open_dashboard_stream_does_not_block_service_shutdown(self):
+        response = await self.client.get(self.web_url+'/events')
+        self.assertEqual(response.status, 200)
+        await response.content.readline()
+        await self.stop_service()
+        response.close()
+        self.assertEqual(self.process.returncode, 0)
 
 
 if __name__ == '__main__':

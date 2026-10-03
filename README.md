@@ -13,12 +13,14 @@ flowchart LR
         P --> M[Workspace manager and admission]
         M --> V[Firecracker lifecycle]
         M --> D[(Private SQLite journal)]
+        W[Embedded web dashboard] -->|Observe or control| M
     end
     V --> G[Guest executor]
     G --> F[Persistent workspace disk]
     V --> S[RAM checkpoint and exact Nix closures]
     H --> I[OpenAI inference service]
     A[Administrative CLI] -->|Private Unix socket| M
+    B[LAN browser] -->|HTTP and live events| W
 ```
 
 The administrative API uses a private Unix socket. The execution gateway listens on loopback port 6090. Each workspace has a separate capability, disk, SSH key, executor session, and conversation directory. One harness can own a workspace at a time.
@@ -47,11 +49,25 @@ Machine-specific NixOS guest and network modules live in the private `mbp-agent-
 | `ENVIRONMENT_STATE` | `~/.local/share/environment-orchestrator` | Private database, disks, checkpoints, credentials, and conversations |
 | `ENVIRONMENT_SLOTS` | `[]` | JSON array with `runner`, `firecracker`, and `guest_host` per slot |
 | `ENVIRONMENT_PORT` | `6090` | Loopback execution gateway port |
+| `ENVIRONMENT_WEB_ADDR` | `127.0.0.1:6091` | Dashboard listener; `off` disables it |
+| `ENVIRONMENT_WEB_HOSTS` | Empty | Additional allowed HTTP hostnames or IP addresses, separated by commas |
 | `ENVIRONMENT_IDLE_SECONDS` | `120` | Time without an execution lease before suspension |
 | `ENVIRONMENT_HOST_RESERVE_MB` | `3072` | Host memory reserve before starting a 1 GiB guest |
 | `RUST_LOG` | `environment_orchestrator=info` | Service log filter |
 
 The slot runner and Firecracker binary must exist in the Nix store. The host must provide KVM, writable TAP devices, guest routing, and access to the Nix daemon. The service wrapper supplies Nix-managed SSH and filesystem tools.
+
+## Web dashboard
+
+The dashboard uses the compact terminal style of Vitals. It provides workspace filters, resume and suspend controls, a workspace inspector, memory admission readings, six minutes of in-memory history, and the last 20 journal entries. It can allocate an unused configured slot. Allocation does not start its guest. Shutdown and recovery require confirmation because they discard the memory session.
+
+The dashboard runs inside the Rust service. Its HTML, CSS, and JavaScript are embedded at build time. It has no frontend server, framework, CDN, or external font dependency. One sampler updates all browsers every two seconds through server-sent events. Observation does not acquire an execution lease, start a guest, or reset its idle timer.
+
+The default listener is local. The `mbp-agent` deployment exposes `http://192.168.50.203:6091` through its LAN interface. It treats LAN clients as administrators, like Vitals; it has no login. Allowed Host headers, same-origin control requests, and a content security policy restrict browser access. The dashboard does not expose workspace capabilities, guest shell execution, or the private administrative API. Add any new proxy hostname to `ENVIRONMENT_WEB_HOSTS` before using it.
+
+Service memory is process PSS. Guest memory is each VMM's RSS. The admission bound is the configured 1 GiB capacity, which differs from current RSS. Persistent disk and snapshot storage show allocated filesystem blocks. Snapshot files can remain while a guest runs; only a committed suspended checkpoint is valid for restore. History resets when the service restarts. The request journal remains on disk.
+
+The read-only dashboard API is `GET /api/dashboard`. Live snapshots use `GET /events`. Dashboard control requests use `POST /api/workspaces` or `POST /api/workspaces/{id}/{resume|suspend|shutdown|recover}` with an exact same-origin `Origin` header and `X-Environment-UI: 1`. Control actions are recorded in the durable request journal.
 
 ## Suspension and recovery
 

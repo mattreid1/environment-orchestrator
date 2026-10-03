@@ -8,6 +8,8 @@ ENVIRONMENT_ORCHESTRATOR_BIN=/nix/store/.../bin/environment-orchestrator-service
 
 Each API test creates an isolated state directory, SQLite database, and loopback listener. Fake runners record unexpected startup attempts and exit. A high memory reserve prevents guest admission. The tests do not start Firecracker or change the installed service. A missing binary causes an explicit skip.
 
+The API suite also checks dashboard creation, capability redaction, same-origin controls, Host restrictions, journal entries, observation with a queued writer, and shutdown with an open event stream. Dashboard reads and live events must not start a guest or retain a lease. `nix build` checks JavaScript syntax with a Nix-provided Node.js interpreter.
+
 `integration.py` and `recovery.py` operate on real guest workspaces. Run those only when guest execution or recovery is intended.
 
 Measure a systemd service after all guests reach the same state:

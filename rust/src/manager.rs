@@ -109,7 +109,8 @@ impl Manager {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "FULL")?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, slot INTEGER UNIQUE, token TEXT NOT NULL, created REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, workspace TEXT, method TEXT, state TEXT, created REAL, finished REAL);")?;
+            CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, workspace TEXT, method TEXT, state TEXT, created REAL, finished REAL);
+            CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC);")?;
         db.execute(
             "UPDATE operations SET state='unknown', finished=? WHERE state='pending'",
             [timestamp()],
@@ -276,6 +277,99 @@ impl Manager {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| anyhow::anyhow!("This workspace already has an attached harness"))?;
         Ok(WriterGuard { workspace })
+    }
+
+    /// Observe host metadata without leases, guest probes, or waiting for VM mutations.
+    pub fn observation(&self) -> Value {
+        use std::os::unix::fs::MetadataExt;
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by_key(|workspace| workspace.binding.slot);
+        let rows = workspaces
+            .iter()
+            .map(|workspace| {
+                let mut row = self.public(&workspace.binding, false);
+                match workspace.vm.try_lock() {
+                    Ok(mut vm) => match vm.status() {
+                        Ok(status) => row
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(status.as_object().unwrap().clone()),
+                        Err(error) => {
+                            row["state"] = json!("error");
+                            row["error"] = json!(error.to_string());
+                        }
+                    },
+                    Err(_) => {
+                        row["state"] = json!("transitioning");
+                    }
+                }
+                row["active_operations"] = json!(workspace.busy.load(Ordering::SeqCst));
+                row["queued_operations"] = json!(workspace.queued.load(Ordering::SeqCst));
+                row["writer_connected"] = json!(workspace.writer.load(Ordering::SeqCst));
+                row["idle_elapsed_seconds"] = json!(
+                    workspace
+                        .last_activity
+                        .lock()
+                        .unwrap()
+                        .elapsed()
+                        .as_secs_f64()
+                );
+                row["memory_bound_bytes"] = json!(1024_u64 * 1024 * 1024);
+                let folder = self
+                    .settings
+                    .state
+                    .join("workspaces")
+                    .join(&workspace.binding.id);
+                if let Ok(disk) = std::fs::metadata(folder.join("state.ext4")) {
+                    row["disk_bytes"] = json!(disk.len());
+                    row["disk_allocated_bytes"] = json!(disk.blocks() * 512);
+                }
+                if let Some(name) = row["snapshot"].as_str().filter(|name| {
+                    name.starts_with("snapshot-")
+                        && std::path::Path::new(name).components().count() == 1
+                }) {
+                    let allocated: u64 = ["memory", "vm.state"]
+                        .into_iter()
+                        .filter_map(|file| std::fs::metadata(folder.join(name).join(file)).ok())
+                        .map(|file| file.blocks() * 512)
+                        .sum();
+                    row["checkpoint_bytes"] = json!(allocated);
+                }
+                if let Some(pid) = row["pid"].as_u64() {
+                    if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+                        if let Some(rss) = status
+                            .lines()
+                            .find(|line| line.starts_with("VmRSS:"))
+                            .and_then(|line| line.split_whitespace().nth(1))
+                            .and_then(|value| value.parse::<u64>().ok())
+                        {
+                            row["rss_bytes"] = json!(rss * 1024);
+                        }
+                    }
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        let recent = self.recent_operations().unwrap_or_else(|error| {
+            vec![json!({"state":"error","method":"journal","error":error.to_string()})]
+        });
+        json!({"workspaces":rows,"slots":self.settings.slots.len(),"host_reserve_bytes":self.settings.reserve_mb * 1024 * 1024,"idle_seconds":self.settings.idle.as_secs_f64(),"recent_operations":recent})
+    }
+
+    fn recent_operations(&self) -> Result<Vec<Value>> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare_cached("SELECT workspace,method,state,created,finished FROM operations ORDER BY created DESC LIMIT 20")?;
+        Ok(statement.query_map([], |row| Ok(json!({
+            "workspace":row.get::<_, Option<String>>(0)?, "method":row.get::<_, Option<String>>(1)?,
+            "state":row.get::<_, Option<String>>(2)?, "created":row.get::<_, Option<f64>>(3)?,
+            "finished":row.get::<_, Option<f64>>(4)?,
+        })))?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     fn check_cancel(&self, cancel: &CancellationToken) -> Result<()> {

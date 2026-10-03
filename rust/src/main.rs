@@ -1,6 +1,7 @@
 mod manager;
 mod proxy;
 mod vm;
+mod web;
 
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -147,6 +148,12 @@ async fn main() -> Result<()> {
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
     let tcp = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, settings.port)).await?;
     let manager = Manager::new(settings)?;
+    let web_config = web::Config::from_env()?;
+    let web_listener = if let Some(config) = &web_config {
+        Some(tokio::net::TcpListener::bind(config.address).await?)
+    } else {
+        None
+    };
     let admin = Router::new()
         .route("/workspaces", get(list).post(create))
         .route("/workspaces/{id}", get(status))
@@ -168,6 +175,22 @@ async fn main() -> Result<()> {
             .await
     });
     let idle_task = tokio::spawn(manager.clone().idle_loop());
+    let web_tasks = if let (Some(config), Some(listener)) = (web_config, web_listener) {
+        let state = web::Web::new(manager.clone(), &config);
+        let router = web::router(state.clone());
+        let cancel = manager.shutdown_token.clone();
+        tracing::info!(address=%config.address,"Dashboard is ready");
+        Some((
+            tokio::spawn(state.sample()),
+            tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(cancel.cancelled_owned())
+                    .await
+            }),
+        ))
+    } else {
+        None
+    };
     tracing::info!("Rust environment orchestrator is ready");
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -181,6 +204,10 @@ async fn main() -> Result<()> {
     // Upgraded WebSockets drain through Manager::stop, rather than HTTP shutdown.
     admin_task.await??;
     gateway_task.await??;
+    if let Some((sampler, server)) = web_tasks {
+        sampler.await?;
+        server.await??;
+    }
     let _ = fs::remove_file(socket_path);
     result
 }
