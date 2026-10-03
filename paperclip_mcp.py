@@ -47,12 +47,12 @@ def request_api(arguments, context=None):
     request = urllib.request.Request(context["PAPERCLIP_API_URL"].rstrip("/") + "/api" + path,
         data=body, method=method, headers={"Authorization":"Bearer " + context["PAPERCLIP_API_KEY"],
             "Content-Type":"application/json", "X-Paperclip-Run-Id":context["PAPERCLIP_RUN_ID"]})
-    context = ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt")
+    tls_context = ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt")
     # A scoped credential must not follow redirects to another origin.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
-    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=tls_context))
     with opener.open(request, timeout=30) as response:
         raw = response.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:

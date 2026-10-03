@@ -7,6 +7,8 @@ import unittest
 import tempfile
 import urllib.request
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT=Path(__file__).parent
 sys.path.insert(0,str(ROOT))
@@ -59,6 +61,25 @@ class PaperclipTests(unittest.TestCase):
             request=urllib.request.Request(bridge['url'],data=body,headers={'Authorization':'Bearer '+bridge['capability']})
             with urllib.request.urlopen(request) as response:
                 self.assertEqual([tool['name'] for tool in json.load(response)['result']['tools']],['paperclip_api'])
+
+    def test_http_tool_returns_successful_api_results_with_scoped_redaction(self):
+        class API(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_GET(self):
+                self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+                self.wfile.write(json.dumps({'name':'Hiring','token':'hidden','echo':'scoped-api-credential'}).encode())
+        upstream=ThreadingHTTPServer(('127.0.0.1',0),API)
+        thread=threading.Thread(target=upstream.serve_forever,daemon=True);thread.start()
+        try:
+            context={'PAPERCLIP_API_URL':f'http://127.0.0.1:{upstream.server_address[1]}','PAPERCLIP_API_KEY':'scoped-api-credential','PAPERCLIP_RUN_ID':COMPANY,'PAPERCLIP_COMPANY_ID':COMPANY}
+            with paperclip_mcp.http_bridge(context) as bridge:
+                body=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'paperclip_api','arguments':{'path':'/agents/me'}}}).encode()
+                request=urllib.request.Request(bridge['url'],data=body,headers={'Authorization':'Bearer '+bridge['capability']})
+                with urllib.request.urlopen(request) as response:result=json.load(response)['result']
+                self.assertFalse(result.get('isError',False),result)
+                self.assertEqual(json.loads(result['content'][0]['text']),{'name':'Hiring','echo':'<redacted>'})
+        finally:
+            upstream.shutdown();upstream.server_close();thread.join(timeout=2)
 
     def test_cleanup_removes_only_current_run_authentication_marker(self):
         with tempfile.TemporaryDirectory() as folder:
