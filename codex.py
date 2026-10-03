@@ -246,7 +246,7 @@ def main(argv=None, paperclip_context=None):
             import paperclip_mcp
             bridge = cleanup.enter_context(paperclip_mcp.http_bridge(paperclip_context))
         import mail_mcp
-        mail_bridge = cleanup.enter_context(mail_mcp.http_bridge())
+        mail_bridge = cleanup.enter_context(mail_mcp.http_bridge(company_id=paperclip[0] if paperclip else None))
         atomic_private_write(state_home / "config.toml", harness_config(bridge, mail_bridge))
         key_path = host_home / ".config/desktop-broker/inference-key"
         if key_path.is_symlink() or key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:

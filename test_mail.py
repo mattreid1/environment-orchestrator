@@ -11,6 +11,9 @@ import claude
 import codex
 import mail_mcp
 
+AIME = "8744dbdb-cdd7-4fee-8b46-3bd6ae6705fe"
+OTHER = "11111111-1111-4111-8111-111111111111"
+
 MESSAGE = b'From: Sender <sender@example.com>\r\nTo: receiver@example.com\r\nSubject: Fixture\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nRead me without marking seen.\r\n'
 
 
@@ -57,6 +60,9 @@ class MailTests(unittest.TestCase):
         self.path = Path(self.folder.name) / 'mail.json'
         self.path.write_text(json.dumps({'account': 'fixture@example.com', 'app_password': 'fixture-secret', 'mailbox': 'INBOX'}))
         self.path.chmod(0o600)
+        self.policy = self.path.with_name("mail-policy.json")
+        self.policy.write_text(json.dumps({"companies": [AIME]}))
+        self.policy.chmod(0o600)
         IMAPFixture.instances = []
         IMAPFixture.validity = b'42'
         IMAPFixture.size = len(MESSAGE)
@@ -113,7 +119,7 @@ class MailTests(unittest.TestCase):
         with self.assertRaises(OSError):
             mail_mcp.load_config(link)
         IMAPFixture.failure = 'provider exposed fixture-secret'
-        response = mail_mcp.handle({'method': 'tools/call', 'params': {'name': 'search_mail', 'arguments': {'query': 'a'}}}, self.path, IMAPFixture)
+        response = mail_mcp.handle({'method': 'tools/call', 'params': {'name': 'search_mail', 'arguments': {'query': 'a'}}}, self.path, IMAPFixture, AIME, self.policy)
         self.assertTrue(response['isError'])
         self.assertNotIn('fixture-secret', json.dumps(response))
         self.assertTrue(IMAPFixture.instances[-1].logged_out)
@@ -128,7 +134,7 @@ class MailTests(unittest.TestCase):
         self.assertEqual(result['attachments'][0]['filename'], 'proof.bin')
 
     def test_bridge_requires_capability_and_discovery_does_not_authenticate(self):
-        with mail_mcp.http_bridge(self.path, IMAPFixture) as bridge:
+        with mail_mcp.http_bridge(self.path, IMAPFixture, AIME, self.policy) as bridge:
             body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}).encode()
             request = urllib.request.Request(bridge['url'], data=body, headers={'Content-Type': 'application/json'})
             with self.assertRaises(urllib.error.HTTPError) as error:
@@ -149,6 +155,22 @@ class MailTests(unittest.TestCase):
             self.assertFalse(result['result'].get('isError', False))
             mail = json.loads(result['result']['content'][0]['text'])
             self.assertEqual(mail['messages'][0]['message_id'], '42:11')
+
+    def test_company_boundary_is_enforced_for_discovery_and_calls(self):
+        for company in (None, OTHER, "invalid"):
+            with self.subTest(company=company):
+                listed = mail_mcp.handle({'method': 'tools/list'}, self.path, IMAPFixture, company, self.policy)
+                self.assertEqual(listed['tools'], [])
+                response = mail_mcp.handle({'method': 'tools/call', 'params': {'name': 'read_mail', 'arguments': {'message_id': '42:9', 'company_id': AIME}}}, self.path, IMAPFixture, company, self.policy)
+                self.assertTrue(response['isError'])
+        self.assertEqual(IMAPFixture.instances, [])
+        self.policy.chmod(0o644)
+        self.assertFalse(mail_mcp.allowed_company(AIME, self.policy))
+        self.policy.chmod(0o600)
+        self.policy.write_text('{"companies": "' + AIME + '"}')
+        self.assertFalse(mail_mcp.allowed_company(AIME, self.policy))
+        self.policy.unlink()
+        self.assertFalse(mail_mcp.allowed_company(AIME, self.policy))
 
     def test_both_launchers_expose_only_bridge_capability(self):
         bridge = {'url': 'http://127.0.0.1:9999/mcp', 'capability': 'temporary-mail-capability'}

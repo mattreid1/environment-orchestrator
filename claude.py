@@ -135,7 +135,7 @@ def main(argv=None, paperclip_context=None, instructions=""):
             raise RuntimeError("The inference key file is invalid")
         bridge = cleanup.enter_context(guest_mcp.http_bridge(binding, paperclip_context))
         import mail_mcp
-        mail_bridge = cleanup.enter_context(mail_mcp.http_bridge())
+        mail_bridge = cleanup.enter_context(mail_mcp.http_bridge(company_id=paperclip[0] if paperclip else None))
         command = codex.isolated_command(bwrap, executable, state_home, host_home,
             binding["workspace_path"], harness_arguments(state_home, bridge, claude_arguments, instructions, mail_bridge))
         child = subprocess.Popen(command, env=harness_environment(state_home, key))

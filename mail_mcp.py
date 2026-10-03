@@ -14,6 +14,7 @@ import ssl
 import stat
 import sys
 import threading
+import uuid
 from email.parser import BytesParser
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +54,26 @@ def load_config(path=None):
     if any(not isinstance(value[key], str) or not value[key] or any(c in value[key] for c in "\r\n\x00") for key in value):
         raise MailError("Mail configuration is invalid. Run environment-mail setup.")
     return value
+
+
+def policy_path():
+    return Path.home() / ".config/environment-orchestrator/mail-policy.json"
+
+
+def allowed_company(company_id, path=None):
+    """The launcher supplies company identity; tool arguments cannot change it."""
+    try:
+        if not isinstance(company_id, str) or str(uuid.UUID(company_id)) != company_id:
+            return False
+        descriptor = os.open(policy_path() if path is None else path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > MAX_REQUEST_BYTES:
+                return False
+            policy = json.load(stream)
+        return isinstance(policy, dict) and set(policy) == {"companies"} and isinstance(policy["companies"], list) and company_id in policy["companies"]
+    except Exception:
+        return False
 
 
 @contextlib.contextmanager
@@ -176,7 +197,7 @@ def invoke(name, arguments, path=None, client_factory=imaplib.IMAP4_SSL):
         return {"message_id": arguments["message_id"], "headers": headers(message), **message_text(message)}
 
 
-def handle(message, path=None, client_factory=imaplib.IMAP4_SSL):
+def handle(message, path=None, client_factory=imaplib.IMAP4_SSL, company_id=None, policy=None):
     method = message.get("method")
     if method == "initialize":
         return {"protocolVersion": message.get("params", {}).get("protocolVersion", "2024-11-05"),
@@ -184,8 +205,10 @@ def handle(message, path=None, client_factory=imaplib.IMAP4_SSL):
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": TOOLS}
+        return {"tools": TOOLS if allowed_company(company_id, policy) else []}
     if method == "tools/call":
+        if not allowed_company(company_id, policy):
+            return {"isError": True, "content": [{"type": "text", "text": "Mail access is not enabled for this Paperclip company."}]}
         try:
             params = message.get("params", {})
             result = invoke(params.get("name"), params.get("arguments", {}), path, client_factory)
@@ -199,7 +222,7 @@ def handle(message, path=None, client_factory=imaplib.IMAP4_SSL):
 
 
 @contextlib.contextmanager
-def http_bridge(path=None, client_factory=imaplib.IMAP4_SSL):
+def http_bridge(path=None, client_factory=imaplib.IMAP4_SSL, company_id=None, policy=None):
     capability = secrets.token_urlsafe(32)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -220,7 +243,7 @@ def http_bridge(path=None, client_factory=imaplib.IMAP4_SSL):
                     self.send_response(202)
                     self.end_headers()
                     return
-                body = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": handle(message, path, client_factory)}).encode()
+                body = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": handle(message, path, client_factory, company_id, policy)}).encode()
             except Exception:
                 self.send_error(400)
                 return
