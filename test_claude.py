@@ -150,6 +150,9 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
                         await socket.close()
                         break
                 elif method == "fs/readFile":
+                    if params["path"].endswith("/AGENTS.md") and params["path"] not in self.files:
+                        await socket.send_json({"id": data["id"], "error": {"code": -32000, "message": "No such guest file"}})
+                        continue
                     result = {"dataBase64": self.files.get(params["path"], base64.b64encode(b"guest fixture").decode())}
                 elif method == "process/start":
                     result = {"processId": params["processId"]}
@@ -213,6 +216,17 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         writes = [call for call in self.calls if call.get("method") == "fs/writeFile"]
         self.assertEqual(len(writes), 1)
         self.assertEqual(self.connections, 1)
+
+    async def test_known_missing_file_error_keeps_connection_usable(self):
+        with self.assertRaises(guest_mcp.GuestOperationError):
+            await self.call("guest_read", {"path": "AGENTS.md"})
+        self.assertFalse(self.executor.failed)
+        command = await self.call("guest_exec", {"command": "printf still-connected"})
+        self.assertEqual(command["exit_code"], 0)
+        await self.call("guest_write", {"path": "AGENTS.md", "text": "Guest project instructions"})
+        self.assertEqual(await self.call("guest_read", {"path": "AGENTS.md"}), {"text": "Guest project instructions"})
+        self.assertEqual(self.connections, 1)
+        self.assertEqual(sum(call.get("method") == "initialize" for call in self.calls), 1)
 
     async def test_http_bridge_requires_capability_and_never_opens_host_files(self):
         # Give the bridge its own executor because it owns cleanup.

@@ -54,6 +54,8 @@ pub struct Agent {
     role: String,
     #[serde(default)]
     adapter_config: Value,
+    #[serde(default)]
+    metadata: Value,
 }
 
 pub struct Catalog {
@@ -171,14 +173,28 @@ async fn login(client: &Client, config: &Config) -> Result<HeaderValue> {
     Ok(header)
 }
 
+fn recognized_profile(value: &Value) -> Option<&str> {
+    value.as_str().filter(|profile| {
+        matches!(
+            *profile,
+            "swe" | "frontend" | "marketing" | "sales" | "research"
+        )
+    })
+}
+
 fn agent_profile(agent: &Agent) -> String {
+    // Paperclip redacts adapter env values in discovery responses. Public
+    // metadata lets discovery select the same profile as the launcher's env.
+    if let Some(profile) = recognized_profile(&agent.metadata["environmentProfile"]) {
+        return profile.to_string();
+    }
     if let Some(binding) = agent.adapter_config.pointer("/env/ENVIRONMENT_PROFILE") {
-        let profile = binding.as_str().or_else(|| {
-            (binding["type"] == "plain")
-                .then(|| binding["value"].as_str())
-                .flatten()
-        });
-        if let Some(profile) = profile {
+        let value = if binding["type"] == "plain" {
+            &binding["value"]
+        } else {
+            binding
+        };
+        if let Some(profile) = recognized_profile(value) {
             return profile.to_string();
         }
     }
@@ -186,6 +202,7 @@ fn agent_profile(agent: &Agent) -> String {
         "marketing" | "marketer" | "cmo" => "marketing",
         "sales" | "salesperson" | "cro" => "sales",
         "research" | "researcher" | "analyst" => "research",
+        _ if agent.adapter_type == "claude_local" => "frontend",
         _ => "swe",
     }
     .to_string()
@@ -487,6 +504,7 @@ mod tests {
             adapter_type: "codex_local".into(),
             role: "engineer".into(),
             adapter_config: json!({}),
+            metadata: json!({}),
         }
     }
     #[test]
@@ -565,5 +583,44 @@ mod tests {
         agent.adapter_config =
             json!({"env":{"ENVIRONMENT_PROFILE":{"type":"plain","value":"frontend"}}});
         assert_eq!(agent_profile(&agent), "frontend");
+    }
+    #[test]
+    fn discovery_selects_profiles_when_paperclip_redacts_adapter_environment() {
+        let mut agent = agent("Frontend worker");
+        agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":"***REDACTED***"}});
+        agent.metadata = json!({"environmentProfile":"frontend"});
+        assert_eq!(agent_profile(&agent), "frontend");
+        // Public metadata is authoritative when a visible env value differs.
+        agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":"swe"}});
+        assert_eq!(agent_profile(&agent), "frontend");
+        agent.metadata = Value::Null;
+        agent.adapter_config =
+            json!({"env":{"ENVIRONMENT_PROFILE":{"type":"plain","value":"***REDACTED***"}}});
+        agent.adapter_type = "claude_local".into();
+        assert_eq!(agent_profile(&agent), "frontend");
+        agent.adapter_type = "codex_local".into();
+        agent.role = "cmo".into();
+        assert_eq!(agent_profile(&agent), "marketing");
+        // Unknown and non-string values never become allocated profile names.
+        for unknown in [
+            json!("***REDACTED***"),
+            json!("unknown"),
+            json!(3),
+            json!({"value":"frontend"}),
+        ] {
+            agent.metadata = json!({"environmentProfile":unknown.clone()});
+            agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":unknown.clone()}});
+            assert_eq!(agent_profile(&agent), "marketing");
+            agent.role = "engineer".into();
+            assert_eq!(agent_profile(&agent), "swe");
+            agent.adapter_type = "claude_local".into();
+            assert_eq!(agent_profile(&agent), "frontend");
+            agent.adapter_type = "codex_local".into();
+            agent.role = "cmo".into();
+        }
+        // Unsupported public metadata does not hide a recognized env value.
+        agent.metadata = json!({"environmentProfile":"unknown"});
+        agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":"research"}});
+        assert_eq!(agent_profile(&agent), "research");
     }
 }

@@ -16,7 +16,7 @@ Use the `paperclip_api` tool for Paperclip records. Paperclip checks your permis
 10. Omit `adapterConfig.cwd`. Paperclip manages its staging workspace. The host launcher sets the guest workspace path.
 11. Give new agents agent-creation permission only when the operator requests it.
 12. Report the created agents and their intended assignments.
-13. Set `ENVIRONMENT_PROFILE` in the adapter environment. Select `swe`, `frontend`, `marketing`, `sales`, or `research` for the requested work. Frontend includes a local browser. The three knowledge profiles share document and data tools, with separate writable disks.
+13. Set `ENVIRONMENT_PROFILE` in the adapter environment and the same value in `metadata.environmentProfile`. Paperclip masks environment values in discovery responses; the public metadata lets the dashboard show the profile before allocation. Select `swe`, `frontend`, `marketing`, `sales`, or `research` for the requested work. Frontend includes a local browser. The three knowledge profiles share document and data tools, with separate writable disks.
 
 Use `POST /companies/{companyId}/agent-hires` to hire agents. Respect Paperclip approval rules and company budgets.
 

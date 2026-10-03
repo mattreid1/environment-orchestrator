@@ -32,6 +32,10 @@ TOOLS = [
 ]
 
 
+class GuestOperationError(RuntimeError):
+    """The guest returned a definite operation error; the connection is usable."""
+
+
 def guest_uri(path):
     if not isinstance(path, str) or not path or "\x00" in path or len(path) > 4096:
         raise ValueError("Invalid guest path")
@@ -78,7 +82,7 @@ class GuestExecutor:
                 waiter = self.pending.pop(data.get("id"), None)
                 if waiter is not None and not waiter.done():
                     if "error" in data:
-                        waiter.set_exception(RuntimeError("Guest rejected the operation"))
+                        waiter.set_exception(GuestOperationError("Guest rejected the operation"))
                     else:
                         waiter.set_result(data.get("result", {}))
         finally:
@@ -98,6 +102,10 @@ class GuestExecutor:
         try:
             await self.socket.send_json({"id": identifier, "method": method, "params": params or {}})
             return await asyncio.wait_for(future, 120)
+        except GuestOperationError:
+            # A definite guest error, such as a missing file, has a known
+            # result. It must not disable unrelated subsequent operations.
+            raise
         except Exception:
             # A timed-out mutation has an unknown result. Do not retry it.
             self.failed = True
