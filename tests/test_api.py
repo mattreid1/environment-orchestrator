@@ -1,0 +1,236 @@
+"""Black-box API checks for a packaged orchestrator; no Firecracker guest boots."""
+import asyncio
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sqlite3
+import stat
+import tempfile
+import time
+import unittest
+
+from aiohttp import ClientError, ClientSession, ClientTimeout, UnixConnector, WSServerHandshakeError
+
+
+def free_port():
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        return listener.getsockname()[1]
+
+
+class PackagedAPI(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.binary = os.environ.get('ENVIRONMENT_ORCHESTRATOR_BIN')
+        if not cls.binary or not Path(cls.binary).is_file():
+            raise unittest.SkipTest('Set ENVIRONMENT_ORCHESTRATOR_BIN to the packaged Rust service binary')
+
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='orchestrator-api-')
+        self.folder = Path(self.temporary.name)
+        self.state = self.folder/'state'
+        self.attempts = self.folder/'unexpected-vm-starts'
+        self.port = free_port()
+        slots = []
+        for slot in range(2):
+            runner = self.folder/f'runner-{slot}'
+            (runner/'bin').mkdir(parents=True)
+            script = runner/'bin/microvm-run'
+            script.write_text('#!/bin/sh\nprintf attempted >> "'+str(self.attempts)+'"\nexit 94\n')
+            script.chmod(0o700)
+            slots.append({'runner':str(runner), 'firecracker':str(script), 'guest_host':'127.0.0.1'})
+        self.environment = {**os.environ, 'ENVIRONMENT_STATE':str(self.state),
+            'ENVIRONMENT_SLOTS':json.dumps(slots), 'ENVIRONMENT_PORT':str(self.port),
+            'ENVIRONMENT_IDLE_SECONDS':'0', 'ENVIRONMENT_HOST_RESERVE_MB':'1000000000'}
+        self.logfile = (self.folder/'service.log').open('wb')
+        self.process = None
+        self.admin = None
+        self.client = ClientSession(timeout=ClientTimeout(total=5))
+        self.sockets = []
+        try:
+            await self.start_service()
+        except BaseException:
+            await self.client.close()
+            try:
+                await self.stop_service()
+            finally:
+                self.logfile.close()
+                self.temporary.cleanup()
+            raise
+
+    async def asyncTearDown(self):
+        for websocket in self.sockets:
+            await websocket.close()
+        await self.client.close()
+        await self.stop_service()
+        self.logfile.close()
+        self.temporary.cleanup()
+
+    async def start_service(self):
+        self.process = await asyncio.create_subprocess_exec(self.binary, env=self.environment,
+            stdin=asyncio.subprocess.DEVNULL, stdout=self.logfile, stderr=self.logfile)
+        self.admin = ClientSession(connector=UnixConnector(path=str(self.state/'control.sock')),
+            timeout=ClientTimeout(total=5))
+        deadline = time.monotonic()+20
+        while time.monotonic() < deadline:
+            if self.process.returncode is not None:
+                self.fail('Service exited during startup: '+(self.folder/'service.log').read_text())
+            try:
+                async with self.admin.get('http://localhost/workspaces') as response:
+                    if response.status == 200:
+                        return
+            except (ClientError, OSError):
+                pass
+            await asyncio.sleep(.025)
+        self.fail('Service did not publish its private API: '+(self.folder/'service.log').read_text())
+
+    async def stop_service(self):
+        if self.admin:
+            await self.admin.close()
+            self.admin = None
+        if self.process and self.process.returncode is None:
+            self.process.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(self.process.wait(), 10)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+                self.fail('Service failed to stop without a running guest')
+
+    async def api(self, path='/workspaces', method='GET', payload=None, expected=200):
+        async with self.admin.request(method, 'http://localhost'+path, json=payload) as response:
+            body = await response.text()
+            self.assertEqual(response.status, expected, body)
+            if expected >= 400:
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError:
+                    return {'error':body}
+            return json.loads(body)
+
+    async def allocate(self, name='alpha'):
+        return await self.api(method='POST', payload={'id':name})
+
+    async def connect(self, binding, token=None):
+        websocket = await self.client.ws_connect(
+            f'http://127.0.0.1:{self.port}/workspaces/{binding["id"]}/exec',
+            headers={'Authorization':'Bearer '+(token if token is not None else binding['auth_bearer_token'])})
+        self.sockets.append(websocket)
+        return websocket
+
+    async def wait_status(self, workspace, predicate):
+        async with asyncio.timeout(5):
+            while True:
+                status = await self.api('/workspaces/'+workspace)
+                if predicate(status):
+                    return status
+                await asyncio.sleep(.025)
+
+    async def test_control_socket_and_state_are_private(self):
+        self.assertTrue(stat.S_ISSOCK((self.state/'control.sock').stat().st_mode))
+        for path in (self.state, self.state/'control.sock', self.state/'state.sqlite'):
+            self.assertEqual(path.stat().st_mode & 0o077, 0, str(path))
+        self.assertEqual((await self.api())['slots'], 2)
+
+    async def test_malformed_allocation_inputs_return_client_errors(self):
+        for body in ('{invalid', '[]', 'null', '"alpha"', '{"id":3}', '{}'):
+            with self.subTest(body=body):
+                async with self.admin.post('http://localhost/workspaces', data=body,
+                    headers={'Content-Type':'application/json'}) as response:
+                    self.assertEqual(response.status, 400, await response.text())
+        self.assertEqual((await self.api())['workspaces'], [])
+
+    async def test_workspace_ids_cannot_escape_the_state_directory(self):
+        for name in ('../outside', 'a/b', '', 'a'*49, 'with space'):
+            with self.subTest(name=name):
+                await self.api(method='POST', payload={'id':name}, expected=400)
+        self.assertEqual((await self.api())['workspaces'], [])
+
+    async def test_allocation_is_idempotent_and_slot_exhaustion_preserves_bindings(self):
+        first = await self.allocate()
+        self.assertEqual(await self.allocate(), first)
+        second = await self.allocate('beta')
+        self.assertNotEqual(first['slot'], second['slot'])
+        self.assertNotEqual(first['auth_bearer_token'], second['auth_bearer_token'])
+        await self.api(method='POST', payload={'id':'gamma'}, expected=409)
+        self.assertEqual(await self.allocate(), first)
+        self.assertEqual(await self.allocate('beta'), second)
+        status = await self.api('/workspaces/alpha')
+        self.assertNotIn('auth_bearer_token', status)
+        self.assertIsNone(status['pid'])
+        self.assertFalse(self.attempts.exists())
+
+    async def test_workspace_binding_and_capability_survive_service_restart(self):
+        binding = await self.allocate()
+        await self.stop_service()
+        await self.start_service()
+        self.assertEqual(await self.allocate(), binding)
+        self.assertFalse(self.attempts.exists())
+
+    async def test_pending_operation_is_unknown_after_restart_without_replay(self):
+        await self.allocate()
+        await self.stop_service()
+        with sqlite3.connect(self.state/'state.sqlite') as database:
+            database.execute('INSERT INTO operations(id,workspace,method,state,created) VALUES(?,?,?,?,?)',
+                ('interrupted', 'alpha', 'fs/writeFile', 'pending', time.time()))
+        await self.start_service()
+        with sqlite3.connect(self.state/'state.sqlite') as database:
+            rows = database.execute('SELECT method,state,finished FROM operations WHERE id=?', ('interrupted',)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][:2], ('fs/writeFile', 'unknown'))
+        self.assertIsNotNone(rows[0][2])
+        self.assertIsNone((await self.api('/workspaces/alpha'))['pid'])
+        self.assertFalse(self.attempts.exists())
+
+    async def test_second_service_cannot_replace_the_first_services_socket(self):
+        socket_inode = (self.state/'control.sock').stat().st_ino
+        second = await asyncio.create_subprocess_exec(self.binary,
+            env={**self.environment, 'ENVIRONMENT_PORT':str(free_port())},
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            _, error = await asyncio.wait_for(second.communicate(), 3)
+            self.assertNotEqual(second.returncode, 0, error.decode())
+            self.assertEqual((self.state/'control.sock').stat().st_ino, socket_inode)
+            self.assertEqual((await self.api())['slots'], 2)
+        finally:
+            if second.returncode is None:
+                second.kill()
+                await second.wait()
+
+    async def test_capabilities_are_required_and_bound_to_one_workspace(self):
+        first, second = await self.allocate(), await self.allocate('beta')
+        for binding, token in ((first, 'incorrect'), (second, first['auth_bearer_token']), (first, 'wrong-é')):
+            with self.subTest(workspace=binding['id'], token_kind='invalid'):
+                with self.assertRaises(WSServerHandshakeError) as rejected:
+                    await self.connect(binding, token)
+                self.assertEqual(rejected.exception.status, 401)
+        for binding in (first, second):
+            status = await self.api('/workspaces/'+binding['id'])
+            self.assertFalse(status['writer_connected'])
+            self.assertIsNone(status['pid'])
+        self.assertFalse(self.attempts.exists())
+
+    async def test_one_writer_and_disconnect_cancel_admission_without_starting(self):
+        binding = await self.allocate()
+        websocket = await self.connect(binding)
+        status = await self.wait_status('alpha', lambda value: value.get('queued_operations', 0) == 1)
+        self.assertTrue(status['writer_connected'])
+        self.assertIsNone(status['pid'])
+        with self.assertRaises(WSServerHandshakeError) as rejected:
+            await self.connect(binding)
+        self.assertEqual(rejected.exception.status, 409)
+        await websocket.close()
+        status = await self.wait_status('alpha', lambda value: not value['writer_connected'])
+        self.assertEqual(status.get('queued_operations', 0), 0)
+        self.assertEqual(status['active_operations'], 0)
+        self.assertIsNone(status['pid'])
+        self.assertFalse(self.attempts.exists())
+        self.assertFalse((self.state/'workspaces/alpha/state.ext4').exists())
+        # The writer claim must be reusable after the canceled connection.
+        await self.connect(binding)
+
+
+if __name__ == '__main__':
+    unittest.main()
