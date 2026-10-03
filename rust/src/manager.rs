@@ -17,10 +17,25 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Deserialize)]
+pub struct Profile {
+    pub runner: String,
+    #[serde(default = "legacy_memory_mb")]
+    pub memory_mb: u64,
+}
+
+fn legacy_memory_mb() -> u64 {
+    1024
+}
+
+#[derive(Clone, Deserialize)]
 pub struct Slot {
     pub runner: String,
     pub firecracker: String,
     pub guest_host: String,
+    #[serde(default = "legacy_memory_mb")]
+    pub memory_mb: u64,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, Profile>,
 }
 
 pub struct Settings {
@@ -29,6 +44,8 @@ pub struct Settings {
     pub port: u16,
     pub idle: Duration,
     pub reserve_mb: u64,
+    pub memory_overcommit: bool,
+    pub startup_headroom_mb: u64,
 }
 
 #[derive(Clone)]
@@ -38,6 +55,8 @@ pub struct Binding {
     pub guest_host: String,
     pub runner: String,
     pub token: String,
+    pub profile: String,
+    pub memory_mb: u64,
 }
 
 struct Workspace {
@@ -103,6 +122,41 @@ pub fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+fn migrate_profiles(db: &Connection) -> Result<()> {
+    let present: bool = db
+        .prepare("PRAGMA table_info(workspaces)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "profile");
+    if !present {
+        db.execute(
+            "ALTER TABLE workspaces ADD COLUMN profile TEXT NOT NULL DEFAULT 'swe'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn slot_profile(slot: &Slot, name: &str) -> Result<Profile> {
+    let profile = match slot.profiles.get(name) {
+        Some(profile) => profile.clone(),
+        None if name == "swe" => Profile {
+            runner: slot.runner.clone(),
+            memory_mb: slot.memory_mb,
+        },
+        None => bail!("Workspace profile is not configured: {name}"),
+    };
+    if profile.runner.is_empty() || profile.memory_mb == 0 {
+        bail!("Workspace profile has an invalid runner or memory limit");
+    }
+    Ok(profile)
+}
+
+fn startup_threshold_mb(reserve: u64, headroom: u64, memory: u64, overcommit: bool) -> u64 {
+    reserve.saturating_add(if overcommit { headroom } else { memory })
+}
+
 impl Manager {
     pub fn new(settings: Settings) -> Result<Arc<Self>> {
         let db = Connection::open(settings.state.join("state.sqlite"))?;
@@ -111,17 +165,20 @@ impl Manager {
         db.execute_batch("CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, slot INTEGER UNIQUE, token TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, workspace TEXT, method TEXT, state TEXT, created REAL, finished REAL);
             CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC);")?;
+        migrate_profiles(&db)?;
         db.execute(
             "UPDATE operations SET state='unknown', finished=? WHERE state='pending'",
             [timestamp()],
         )?;
         let bindings = {
-            let mut stmt = db.prepare("SELECT id,slot,token FROM workspaces ORDER BY slot")?;
+            let mut stmt =
+                db.prepare("SELECT id,slot,token,profile FROM workspaces ORDER BY slot")?;
             stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -134,7 +191,7 @@ impl Manager {
             admission: AsyncMutex::new(()),
             shutdown_token: CancellationToken::new(),
         });
-        for (id, slot, token) in bindings {
+        for (id, slot, token, profile) in bindings {
             if !valid_id(&id) {
                 bail!("Stored workspace ID is invalid");
             }
@@ -142,30 +199,41 @@ impl Manager {
                 id.clone(),
                 usize::try_from(slot).context("Invalid stored workspace slot")?,
                 token,
+                profile,
             )?;
             manager.workspaces.write().unwrap().insert(id, workspace);
         }
         Ok(manager)
     }
 
-    fn make_workspace(&self, id: String, slot: usize, token: String) -> Result<Arc<Workspace>> {
+    fn make_workspace(
+        &self,
+        id: String,
+        slot: usize,
+        token: String,
+        profile: String,
+    ) -> Result<Arc<Workspace>> {
         let config = self
             .settings
             .slots
             .get(slot)
             .context("Stored workspace slot is not configured")?;
+        let image = slot_profile(config, &profile)?;
         let binding = Binding {
             id: id.clone(),
             slot,
-            runner: config.runner.clone(),
+            runner: image.runner.clone(),
             guest_host: config.guest_host.clone(),
             token,
+            profile,
+            memory_mb: image.memory_mb,
         };
         let vm = Vm::new(VmConfig {
             state: self.settings.state.join("workspaces").join(id),
-            runner: config.runner.clone(),
+            runner: image.runner.clone(),
             firecracker: config.firecracker.clone(),
             guest_host: config.guest_host.clone(),
+            memory_mb: image.memory_mb,
         })?;
         Ok(Arc::new(Workspace {
             binding,
@@ -192,6 +260,10 @@ impl Manager {
     }
 
     pub fn allocate(&self, id: &str) -> Result<Value> {
+        self.allocate_profile(id, None)
+    }
+
+    pub fn allocate_profile(&self, id: &str, requested: Option<&str>) -> Result<Value> {
         if !valid_id(id) {
             bail!("Workspace ID must contain 1 to 48 letters, digits, underscores, or hyphens");
         }
@@ -200,19 +272,39 @@ impl Manager {
         }
         let mut workspaces = self.workspaces.write().unwrap();
         if let Some(workspace) = workspaces.get(id) {
+            if requested.is_some_and(|profile| profile != workspace.binding.profile) {
+                bail!(
+                    "Workspace profile is already bound. Create a separate workspace for another profile."
+                );
+            }
             return Ok(self.public(&workspace.binding, true));
         }
+        let profile = requested.unwrap_or("swe");
+        if !valid_id(profile) {
+            bail!("Invalid workspace profile");
+        }
+        if !self
+            .settings
+            .slots
+            .iter()
+            .any(|slot| slot_profile(slot, profile).is_ok())
+        {
+            bail!("Workspace profile is not configured: {profile}");
+        }
         let slot = (0..self.settings.slots.len())
-            .find(|slot| !workspaces.values().any(|w| w.binding.slot == *slot))
+            .find(|slot| {
+                slot_profile(&self.settings.slots[*slot], profile).is_ok()
+                    && !workspaces.values().any(|w| w.binding.slot == *slot)
+            })
             .context("All configured workspace slots are allocated. No workspace was deleted.")?;
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes)
             .map_err(|e| anyhow::anyhow!("Capability generation failed: {e}"))?;
         let token = URL_SAFE_NO_PAD.encode(bytes);
-        let workspace = self.make_workspace(id.to_owned(), slot, token.clone())?;
+        let workspace = self.make_workspace(id.to_owned(), slot, token.clone(), profile.into())?;
         self.db.lock().unwrap().execute(
-            "INSERT INTO workspaces VALUES(?,?,?,?)",
-            params![id, i64::try_from(slot)?, token, timestamp()],
+            "INSERT INTO workspaces(id,slot,token,created,profile) VALUES(?,?,?,?,?)",
+            params![id, i64::try_from(slot)?, token, timestamp(), profile],
         )?;
         let result = self.public(&workspace.binding, true);
         workspaces.insert(id.to_owned(), workspace);
@@ -220,7 +312,7 @@ impl Manager {
     }
 
     fn public(&self, binding: &Binding, token: bool) -> Value {
-        let mut value = json!({"id":binding.id,"slot":binding.slot,"guest_host":binding.guest_host,"runner":binding.runner,"generation":binding.runner,"workspace_path":"/var/lib/agent/workspace","exec_url":format!("ws://127.0.0.1:{}/workspaces/{}/exec",self.settings.port,binding.id)});
+        let mut value = json!({"id":binding.id,"slot":binding.slot,"guest_host":binding.guest_host,"runner":binding.runner,"generation":binding.runner,"profile":binding.profile,"configured_memory_mb":binding.memory_mb,"workspace_path":"/var/lib/agent/workspace","exec_url":format!("ws://127.0.0.1:{}/workspaces/{}/exec",self.settings.port,binding.id)});
         if token {
             value["auth_bearer_token"] = json!(binding.token);
         }
@@ -263,8 +355,19 @@ impl Manager {
             result.push(self.status(&id).await?);
         }
         Ok(
-            json!({"workspaces":result,"slots":self.settings.slots.len(),"host_reserve_mb":self.settings.reserve_mb}),
+            json!({"workspaces":result,"slots":self.settings.slots.len(),"host_reserve_mb":self.settings.reserve_mb,"memory_overcommit":self.settings.memory_overcommit,"startup_headroom_mb":self.settings.startup_headroom_mb,"profiles":self.profiles()}),
         )
+    }
+
+    pub fn profiles(&self) -> Vec<String> {
+        let mut profiles = std::collections::BTreeSet::new();
+        for slot in &self.settings.slots {
+            if !slot.runner.is_empty() {
+                profiles.insert("swe".to_string());
+            }
+            profiles.extend(slot.profiles.keys().cloned());
+        }
+        profiles.into_iter().collect()
     }
 
     pub fn claim_writer(self: &Arc<Self>, id: &str) -> Result<WriterGuard> {
@@ -320,7 +423,9 @@ impl Manager {
                         .elapsed()
                         .as_secs_f64()
                 );
-                row["memory_bound_bytes"] = json!(1024_u64 * 1024 * 1024);
+                if row.get("memory_bound_bytes").is_none() {
+                    row["memory_bound_bytes"] = json!(workspace.binding.memory_mb * 1024 * 1024);
+                }
                 let folder = self
                     .settings
                     .state
@@ -359,7 +464,7 @@ impl Manager {
         let recent = self.recent_operations().unwrap_or_else(|error| {
             vec![json!({"state":"error","method":"journal","error":error.to_string()})]
         });
-        json!({"workspaces":rows,"slots":self.settings.slots.len(),"host_reserve_bytes":self.settings.reserve_mb * 1024 * 1024,"idle_seconds":self.settings.idle.as_secs_f64(),"recent_operations":recent})
+        json!({"workspaces":rows,"slots":self.settings.slots.len(),"host_reserve_bytes":self.settings.reserve_mb * 1024 * 1024,"memory_overcommit":self.settings.memory_overcommit,"startup_headroom_bytes":self.settings.startup_headroom_mb * 1024 * 1024,"profiles":self.profiles(),"startup_required_bytes":startup_threshold_mb(self.settings.reserve_mb,self.settings.startup_headroom_mb,self.settings.slots.iter().map(|slot| slot.memory_mb).max().unwrap_or(1024),self.settings.memory_overcommit) * 1024 * 1024,"idle_seconds":self.settings.idle.as_secs_f64(),"recent_operations":recent})
     }
 
     fn recent_operations(&self) -> Result<Vec<Value>> {
@@ -466,30 +571,13 @@ impl Manager {
                 _ = self.shutdown_token.cancelled() => bail!("Orchestrator is stopping"),
             };
             self.check_cancel(cancel)?;
-            let others = self
-                .workspaces
-                .read()
-                .unwrap()
-                .values()
-                .filter(|other| other.binding.id != workspace.binding.id)
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut active = 0;
-            for other in others {
-                if other
-                    .vm
-                    .lock()
-                    .await
-                    .status()?
-                    .get("pid")
-                    .is_some_and(|pid| !pid.is_null())
-                {
-                    active += 1;
-                }
-            }
-            if available_memory_mb()?
-                >= self.settings.reserve_mb.saturating_add(1024 * (active + 1))
-            {
+            let required = startup_threshold_mb(
+                self.settings.reserve_mb,
+                self.settings.startup_headroom_mb,
+                workspace.binding.memory_mb,
+                self.settings.memory_overcommit,
+            );
+            if available_memory_mb()? >= required {
                 self.check_cancel(cancel)?;
                 return Ok(admission);
             }
@@ -696,5 +784,93 @@ mod tests {
     #[test]
     fn host_memory_is_available() {
         assert!(available_memory_mb().unwrap() > 0);
+    }
+    #[test]
+    fn legacy_slots_and_profile_runner_selection() {
+        let slot: Slot = serde_json::from_value(json!({"runner":"legacy","firecracker":"fc","guest_host":"127.0.0.1", "profiles":{"frontend":{"runner":"frontend-runner","memory_mb":3072}}})).unwrap();
+        assert_eq!(slot_profile(&slot, "swe").unwrap().memory_mb, 1024);
+        assert_eq!(
+            slot_profile(&slot, "frontend").unwrap().runner,
+            "frontend-runner"
+        );
+        assert_eq!(slot_profile(&slot, "frontend").unwrap().memory_mb, 3072);
+        assert!(slot_profile(&slot, "sales").is_err());
+    }
+    #[test]
+    fn profile_migration_preserves_capabilities_and_slot() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE workspaces(id TEXT PRIMARY KEY, slot INTEGER UNIQUE, token TEXT NOT NULL, created REAL NOT NULL); INSERT INTO workspaces VALUES('existing',2,'original-capability',1.0);").unwrap();
+        migrate_profiles(&db).unwrap();
+        migrate_profiles(&db).unwrap();
+        assert_eq!(
+            db.query_row("SELECT slot,token,profile FROM workspaces", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?
+            )))
+            .unwrap(),
+            (2, "original-capability".into(), "swe".into())
+        );
+        db.execute("UPDATE workspaces SET profile='research'", [])
+            .unwrap();
+        migrate_profiles(&db).unwrap();
+        assert_eq!(
+            db.query_row("SELECT profile FROM workspaces", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "research"
+        );
+    }
+    #[test]
+    fn overcommit_accounts_for_observed_memory_and_startup_headroom() {
+        assert_eq!(startup_threshold_mb(3072, 512, 3072, true), 3584);
+        assert_eq!(startup_threshold_mb(3072, 512, 3072, false), 6144);
+        // Existing resident guests are already accounted for in MemAvailable.
+        assert_eq!(startup_threshold_mb(3072, 512, 64 * 1024, true), 3584);
+        assert_eq!(startup_threshold_mb(u64::MAX, 512, 3072, true), u64::MAX);
+    }
+    #[test]
+    fn workspace_profile_is_durable_and_cannot_change_during_binding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let folder = directory.path().join("workspaces").join("frontend-project");
+        std::fs::create_dir_all(&folder)?;
+        for name in ["secrets.ext4", "id_ed25519", "vnc_password"] {
+            std::fs::write(folder.join(name), "fixture")?;
+        }
+        let settings = || -> Result<Settings> {
+            Ok(Settings {
+                state: directory.path().to_path_buf(),
+                slots: vec![serde_json::from_value(
+                    json!({"runner":"legacy-swe", "firecracker":"fixture-fc", "guest_host":"127.0.0.1", "memory_mb":3072, "profiles":{"frontend":{"runner":"frontend-image","memory_mb":3072}}}),
+                )?],
+                port: 6090,
+                idle: Duration::ZERO,
+                reserve_mb: 3072,
+                memory_overcommit: true,
+                startup_headroom_mb: 512,
+            })
+        };
+        let manager = Manager::new(settings()?)?;
+        assert!(
+            manager
+                .allocate_profile("frontend-project", Some("unconfigured"))
+                .is_err()
+        );
+        assert!(manager.workspaces.read().unwrap().is_empty());
+        let binding = manager.allocate_profile("frontend-project", Some("frontend"))?;
+        assert_eq!(binding["profile"], "frontend");
+        assert_eq!(binding["runner"], "frontend-image");
+        assert_eq!(binding["configured_memory_mb"], 3072);
+        assert!(
+            manager
+                .allocate_profile("frontend-project", Some("swe"))
+                .is_err()
+        );
+        drop(manager);
+        let manager = Manager::new(settings()?)?;
+        let rebound = manager.allocate("frontend-project")?;
+        assert_eq!(rebound, binding);
+        assert_eq!(manager.workspaces.read().unwrap().len(), 1);
+        Ok(())
     }
 }

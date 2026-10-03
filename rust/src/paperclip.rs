@@ -50,6 +50,10 @@ pub struct Agent {
     name: String,
     status: String,
     adapter_type: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    adapter_config: Value,
 }
 
 pub struct Catalog {
@@ -167,6 +171,26 @@ async fn login(client: &Client, config: &Config) -> Result<HeaderValue> {
     Ok(header)
 }
 
+fn agent_profile(agent: &Agent) -> String {
+    if let Some(binding) = agent.adapter_config.pointer("/env/ENVIRONMENT_PROFILE") {
+        let profile = binding.as_str().or_else(|| {
+            (binding["type"] == "plain")
+                .then(|| binding["value"].as_str())
+                .flatten()
+        });
+        if let Some(profile) = profile {
+            return profile.to_string();
+        }
+    }
+    match agent.role.to_ascii_lowercase().as_str() {
+        "marketing" | "marketer" | "cmo" => "marketing",
+        "sales" | "salesperson" | "cro" => "sales",
+        "research" | "researcher" | "analyst" => "research",
+        _ => "swe",
+    }
+    .to_string()
+}
+
 impl Catalog {
     async fn discover(&self, company: &str) -> Result<()> {
         let config = parse_config(private_json(&self.config_path)?)?;
@@ -221,6 +245,16 @@ impl Catalog {
             origin TEXT NOT NULL, present INTEGER NOT NULL, workspace TEXT UNIQUE,
             PRIMARY KEY(company,id));",
         )?;
+        let columns = db
+            .prepare("PRAGMA table_info(agents)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "profile") {
+            db.execute(
+                "ALTER TABLE agents ADD COLUMN profile TEXT NOT NULL DEFAULT 'swe'",
+                [],
+            )?;
+        }
         let config_path = state.join("paperclip.json");
         Ok(Arc::new(Self {
             db: Mutex::new(db),
@@ -234,14 +268,14 @@ impl Catalog {
     pub fn snapshot(&self) -> Value {
         let db = self.db.lock().unwrap();
         let rows = (|| -> Result<Vec<Value>> {
-            let mut statement = db.prepare_cached("SELECT company,id,name,status,adapter,company_name,prefix,origin,present,workspace FROM agents ORDER BY present DESC,company_name,name,id")?;
+            let mut statement = db.prepare_cached("SELECT company,id,name,status,adapter,company_name,prefix,origin,present,workspace,profile FROM agents ORDER BY present DESC,company_name,name,id")?;
             Ok(statement.query_map([], |row| {
                 let origin: String = row.get(7)?;
                 let prefix: String = row.get(6)?;
                 let id: String = row.get(1)?;
                 Ok(json!({"company_id":row.get::<_,String>(0)?,"id":id,"name":row.get::<_,String>(2)?,
                     "status":row.get::<_,String>(3)?,"adapter_type":row.get::<_,String>(4)?,"company_name":row.get::<_,String>(5)?,
-                    "present":row.get::<_,bool>(8)?,"workspace_id":row.get::<_,Option<String>>(9)?,
+                    "profile":row.get::<_,String>(10)?,"present":row.get::<_,bool>(8)?,"workspace_id":row.get::<_,Option<String>>(9)?,
                     "url":format!("{origin}/{prefix}/agents/{id}")}))
             })?.collect::<rusqlite::Result<Vec<_>>>()?)
         })();
@@ -272,10 +306,11 @@ impl Catalog {
         transaction.execute("UPDATE agents SET present=0", [])?;
         for (company, agents) in companies {
             for agent in agents {
-                transaction.execute("INSERT INTO agents(company,id,name,status,adapter,company_name,prefix,origin,present) VALUES(?,?,?,?,?,?,?,?,1)
+                let profile = agent_profile(&agent);
+                transaction.execute("INSERT INTO agents(company,id,name,status,adapter,company_name,prefix,origin,present,profile) VALUES(?,?,?,?,?,?,?,?,1,?)
                     ON CONFLICT(company,id) DO UPDATE SET name=excluded.name,status=excluded.status,adapter=excluded.adapter,
-                    company_name=excluded.company_name,prefix=excluded.prefix,origin=excluded.origin,present=1",
-                    params![company.id,agent.id,agent.name,agent.status,agent.adapter_type,company.name,company.prefix,config.base_url.trim_end_matches('/')])?;
+                    company_name=excluded.company_name,prefix=excluded.prefix,origin=excluded.origin,present=1,profile=excluded.profile",
+                    params![company.id,agent.id,agent.name,agent.status,agent.adapter_type,company.name,company.prefix,config.base_url.trim_end_matches('/'),profile])?;
             }
         }
         transaction.commit()?;
@@ -312,6 +347,14 @@ impl Catalog {
             params![workspace, company, agent],
         )?;
         Ok(workspace)
+    }
+
+    fn profile(&self, company: &str, agent: &str) -> Result<String> {
+        Ok(self.db.lock().unwrap().query_row(
+            "SELECT profile FROM agents WHERE company=? AND id=?",
+            params![company, agent],
+            |row| row.get(0),
+        )?)
     }
 
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
@@ -385,6 +428,7 @@ impl Catalog {
 pub async fn bind(
     State((catalog, manager)): State<(Arc<Catalog>, Arc<Manager>)>,
     Path((company, agent)): Path<(String, String)>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     if !valid_remote_id(&company) || !valid_remote_id(&agent) {
         return crate::error(StatusCode::BAD_REQUEST, "Invalid Paperclip agent identity");
@@ -397,10 +441,30 @@ pub async fn bind(
             "Paperclip agent discovery failed. Check company access and private configuration.",
         );
     }
-    match catalog
-        .workspace(&company, &agent)
-        .and_then(|workspace| manager.allocate(&workspace))
-    {
+    let explicit = match body {
+        Ok(Json(value)) => match value.get("profile") {
+            Some(Value::String(profile)) => Some(profile.clone()),
+            Some(_) => {
+                return crate::error(
+                    StatusCode::BAD_REQUEST,
+                    "Workspace profile must be a string",
+                );
+            }
+            None => None,
+        },
+        Err(_) => None,
+    };
+    let result = (|| -> Result<Value> {
+        let workspace = catalog.workspace(&company, &agent)?;
+        // Role/config changes do not replace an already allocated workspace.
+        let profile = match explicit {
+            Some(profile) => Some(profile),
+            None if manager.binding(&workspace).is_ok() => None,
+            None => Some(catalog.profile(&company, &agent)?),
+        };
+        manager.allocate_profile(&workspace, profile.as_deref())
+    })();
+    match result {
         Ok(binding) => Json(binding).into_response(),
         Err(error) => crate::error(StatusCode::CONFLICT, error),
     }
@@ -421,6 +485,8 @@ mod tests {
             name: name.into(),
             status: "idle".into(),
             adapter_type: "codex_local".into(),
+            role: "engineer".into(),
+            adapter_config: json!({}),
         }
     }
     #[test]
@@ -480,5 +546,24 @@ mod tests {
         ] {
             assert!(parse_config(json!({"base_url":url,"companies":[{"id":COMPANY,"name":"AIME","prefix":"AIME"}],"login_file":"/private/login.json"})).is_err());
         }
+    }
+    #[test]
+    fn role_profiles_and_explicit_frontend_configuration() {
+        let mut agent = agent("Worker");
+        assert_eq!(agent_profile(&agent), "swe");
+        for (role, profile) in [
+            ("cmo", "marketing"),
+            ("sales", "sales"),
+            ("researcher", "research"),
+        ] {
+            agent.role = role.into();
+            assert_eq!(agent_profile(&agent), profile);
+        }
+        agent.role = "engineer".into();
+        agent.adapter_config = json!({"env":{"ENVIRONMENT_PROFILE":"frontend"}});
+        assert_eq!(agent_profile(&agent), "frontend");
+        agent.adapter_config =
+            json!({"env":{"ENVIRONMENT_PROFILE":{"type":"plain","value":"frontend"}}});
+        assert_eq!(agent_profile(&agent), "frontend");
     }
 }

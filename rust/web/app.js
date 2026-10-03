@@ -143,10 +143,11 @@ function renderWorkspaces(rows) {
     let element = workspaceRows.get(row.id);
     if (!element) {
       element = document.createElement("tr"); element.dataset.workspace = row.id;
-      element.innerHTML = `<td><button class="workspace-name" id="workspace-${row.id}" data-inspect="${row.id}" aria-controls="inspector-panel"></button><div class="sub">SWE · slot ${row.slot}</div></td><td><span class="badge"></span></td><td><span class="writer"></span><div class="sub leases"></div></td><td class="n rss"></td><td class="n wake"></td><td class="n checkpoint"></td><td class="n"><div class="actions"><button class="primary" id="primary-${row.id}" data-id="${row.id}"></button><button class="inspect" id="inspect-${row.id}" data-inspect="${row.id}" aria-label="View details for ${row.id}" aria-controls="inspector-panel">Details</button></div></td>`;
+      element.innerHTML = `<td><button class="workspace-name" id="workspace-${row.id}" data-inspect="${row.id}" aria-controls="inspector-panel"></button><div class="sub profile"></div></td><td><span class="badge"></span></td><td><span class="writer"></span><div class="sub leases"></div></td><td class="n rss"></td><td class="n wake"></td><td class="n checkpoint"></td><td class="n"><div class="actions"><button class="primary" id="primary-${row.id}" data-id="${row.id}"></button><button class="inspect" id="inspect-${row.id}" data-inspect="${row.id}" aria-label="View details for ${row.id}" aria-controls="inspector-panel">Details</button></div></td>`;
       workspaceRows.set(row.id, element);
     }
     element.classList.toggle("selected", row.id === selected);
+    element.querySelector(".profile").textContent = `${row.profile || "swe"} · slot ${row.slot}`;
     const name = element.querySelector(".workspace-name"); name.textContent = row.id; name.setAttribute("aria-pressed", row.id === selected);
     const badge = element.querySelector(".badge");
     badge.className = `badge ${attention(row) ? "attention" : awake(row) ? "running" : row.state}`;
@@ -179,6 +180,7 @@ function renderInspector(rows) {
   $("inspector").hidden = !row; $("inspector-empty").hidden = !!row;
   if (!row) return;
   $("detail-state").textContent = `${state(row)} · ${row.writer_connected ? "attached" : "detached"}`;
+  $("detail-profile").textContent = row.profile || "swe";
   $("detail-memory").textContent = `${awake(row) ? bytes(row.rss_bytes) : "no VMM process"} / ${bytes(row.memory_bound_bytes)}`;
   $("detail-disk").textContent = `${bytes(row.disk_allocated_bytes)} / ${bytes(row.disk_bytes)}`;
   $("disk-usage").style.width = `${row.disk_bytes ? Math.min(100, row.disk_allocated_bytes / row.disk_bytes * 100) : 0}%`;
@@ -219,7 +221,7 @@ function renderAgents() {
     const name = row.querySelector(".agent-name"); name.textContent = agent.name; name.href = agent.url;
     row.querySelector(".agent-company").textContent = agent.company_name;
     row.querySelector(".agent-status").textContent = agent.present ? agent.status : "removed from Paperclip";
-    row.querySelector(".agent-adapter").textContent = agent.adapter_type;
+    row.querySelector(".agent-adapter").textContent = `${agent.adapter_type} · ${agent.profile || "swe"}`;
     const workspace = data.workspaces.find(workspace => workspace.id === agent.workspace_id);
     const control = row.querySelector(".agent-workspace"), label = row.querySelector(".agent-unallocated");
     control.hidden = !workspace; label.hidden = !!workspace;
@@ -261,10 +263,17 @@ function render() {
   renderWorkspaces(visible);
   renderAgents();
   $("legend-awake").textContent = running; $("legend-leases").textContent = leases; $("legend-queued").textContent = queued;
-  const required = data.host_reserve_bytes + (running + 1) * 1024 ** 3;
+  const required = data.startup_required_bytes ?? data.host_reserve_bytes + 1024 ** 3;
+  $("admission-label").textContent = data.memory_overcommit ? "host available / reserve + startup headroom · overcommit" : "host available / reserve + next guest limit";
+  const profiles = data.profiles || ["swe"], picker = $("workspace-profile");
+  if (Array.from(picker.options, option => option.value).join(",") !== profiles.join(",")) {
+    const previous = picker.value;
+    picker.replaceChildren(...profiles.map(profile => { const option = document.createElement("option"); option.value=profile; option.textContent=profile; return option; }));
+    picker.value = profiles.includes(previous) ? previous : profiles.includes("swe") ? "swe" : profiles[0];
+  }
   $("legend-available").textContent = bytes(data.host.available_bytes); $("legend-required").textContent = bytes(required);
   chart("execution-chart", data.history, [1,2,3], ["var(--blue)","var(--green)","var(--accent)"], value => Math.round(value), Math.max(1, data.slots), ["awake", "execution leases", "queued"], value => String(value));
-  chart("memory-chart", data.history, [6], ["var(--blue)"], value => `${(value / 1024 ** 3).toFixed(0)}G`, data.host_reserve_bytes, ["host available"], value => `${(value / 1024 ** 3).toFixed(2)} GiB`, point => data.host_reserve_bytes + (point[1] + 1) * 1024 ** 3);
+  chart("memory-chart", data.history, [6], ["var(--blue)"], value => `${(value / 1024 ** 3).toFixed(0)}G`, data.host_reserve_bytes, ["host available"], value => `${(value / 1024 ** 3).toFixed(2)} GiB`, () => required);
   const sampleSpan = data.history.length ? data.sampled_at - data.history[0][0] : 0;
   $("history-label").textContent = `last ${duration(sampleSpan)} · samples every 2s`;
   renderInspector(rows);
@@ -321,7 +330,7 @@ $("workspace-select").addEventListener("change", event => selectWorkspace(event.
 $("confirm-form").addEventListener("submit", event => { event.preventDefault(); $("confirm-dialog").close(); if (confirmation) perform(confirmation.id, confirmation.action); });
 $("create-form").addEventListener("submit", async event => {
   event.preventDefault(); $("create-submit").disabled = true; $("create-error").hidden = true;
-  try { const result = await post("/api/workspaces", {id:$("workspace-id").value}); selected = result.id; $("create-dialog").close(); message(`${result.id}: workspace allocated; VM remains asleep.`); }
+  try { const result = await post("/api/workspaces", {id:$("workspace-id").value, profile:$("workspace-profile").value}); selected = result.id; $("create-dialog").close(); message(`${result.id}: workspace allocated; VM remains asleep.`); }
   catch (error) { $("create-error").textContent = error.message; $("create-error").hidden = false; }
   finally { $("create-submit").disabled = false; }
 });

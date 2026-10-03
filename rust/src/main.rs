@@ -39,16 +39,8 @@ async fn create(
     State(manager): State<Arc<Manager>>,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let id = match body {
-        Ok(Json(v)) => match v.get("id").and_then(Value::as_str) {
-            Some(id) if manager::valid_id(id) => id.to_owned(),
-            _ => {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    "Workspace ID must contain 1 to 48 letters, digits, underscores, or hyphens",
-                );
-            }
-        },
+    let value = match body {
+        Ok(Json(value)) => value,
         Err(_) => {
             return error(
                 StatusCode::BAD_REQUEST,
@@ -56,7 +48,27 @@ async fn create(
             );
         }
     };
-    match manager.allocate(&id) {
+    let id = match value.get("id").and_then(Value::as_str) {
+        Some(id) if manager::valid_id(id) => id,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "Workspace ID must contain 1 to 48 letters, digits, underscores, or hyphens",
+            );
+        }
+    };
+    let profile = value.get("profile").and_then(Value::as_str);
+    if value.get("profile").is_some() && profile.is_none() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Workspace profile must be a string",
+        );
+    }
+    let allocation = match profile {
+        Some(profile) => manager.allocate_profile(id, Some(profile)),
+        None => manager.allocate(id),
+    };
+    match allocation {
         Ok(v) => Json(v).into_response(),
         Err(e) => error(StatusCode::CONFLICT, e),
     }
@@ -112,6 +124,17 @@ fn settings() -> Result<Settings> {
         idle: Duration::try_from_secs_f64(idle)?,
         port: env::var("ENVIRONMENT_PORT")
             .unwrap_or_else(|_| "6090".into())
+            .parse()?,
+        memory_overcommit: match env::var("ENVIRONMENT_MEMORY_OVERCOMMIT")
+            .unwrap_or_else(|_| "false".into())
+            .as_str()
+        {
+            "true" => true,
+            "false" => false,
+            _ => bail!("ENVIRONMENT_MEMORY_OVERCOMMIT must be true or false"),
+        },
+        startup_headroom_mb: env::var("ENVIRONMENT_STARTUP_HEADROOM_MB")
+            .unwrap_or_else(|_| "512".into())
             .parse()?,
         reserve_mb: env::var("ENVIRONMENT_HOST_RESERVE_MB")
             .unwrap_or_else(|_| "3072".into())

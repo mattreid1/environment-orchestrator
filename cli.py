@@ -8,10 +8,13 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Manage private Firecracker SWE environments")
+    parser = argparse.ArgumentParser(description="Manage private Firecracker agent environments")
     parser.add_argument("action", choices=["create", "status", "resume", "suspend", "shutdown", "recover"])
     parser.add_argument("workspace", nargs="?")
+    parser.add_argument("--profile", help="Workspace profile for create (default: swe)")
     args = parser.parse_args()
+    if args.profile and args.action != "create":
+        parser.error("--profile is only available for create")
     if args.action != "status" and not args.workspace:
         parser.error("This action requires a workspace ID")
     state = Path(os.environ.get("ENVIRONMENT_STATE", str(Path.home()/".local/share/environment-orchestrator")))
@@ -19,6 +22,8 @@ async def main():
     method, data = "GET", None
     if args.action == "create":
         method, data = "POST", {"id": args.workspace}
+        if args.profile:
+            data["profile"] = args.profile
     elif args.action != "status":
         method, path = "POST", path+"/"+args.action
     async with ClientSession(connector=UnixConnector(path=str(state/"control.sock")), timeout=ClientTimeout(total=180)) as session:

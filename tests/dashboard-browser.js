@@ -11,6 +11,7 @@
   const response = await fetch("/api/dashboard");
   const snapshot = await response.json();
   assert(snapshot.workspaces.length > 0, "A workspace is available for inspection");
+  assert(Array.from(get("workspace-profile").options, option => option.value).join(",") === snapshot.profiles.join(","), "Create dialog offers every configured profile");
   const id = snapshot.workspaces.at(-1).id;
   get(`inspect-${id}`).click();
   await wait(1000);
@@ -23,6 +24,11 @@
   get("workspace-select").dispatchEvent(new Event("change", {bubbles:true}));
   assert(get("launch-command").value === `environment-codex ${selected}`, "Workspace picker changes the launcher command");
   assert(["control-toggle", "control-shutdown", "control-recover"].every(control => get(control).dataset.id === selected), "Selected workspace owns every details control");
+  assert(get("detail-profile").textContent === snapshot.workspaces.find(row => row.id === selected).profile, "Details shows the bound workspace profile");
+  if (snapshot.memory_overcommit) {
+    assert(get("admission-label").textContent.includes("startup headroom"), "Memory chart describes the overcommit admission policy");
+    assert(snapshot.startup_required_bytes === snapshot.host_reserve_bytes + snapshot.startup_headroom_bytes, "Overcommit threshold uses reserve plus startup headroom");
+  }
   const ids = ["workspace-select", "launch-command", "control-toggle", `inspect-${id}`, "execution-chart-canvas", "memory-chart-canvas"];
   const nodes = ids.map(get);
   window.scrollTo(0, 0);

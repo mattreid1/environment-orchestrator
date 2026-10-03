@@ -52,12 +52,15 @@ def atomic_private_write(path, contents):
             os.unlink(temporary)
 
 
-def workspace_binding(workspace, control_socket, paperclip=None):
+def workspace_binding(workspace, control_socket, paperclip=None, profile=None):
     connection = UnixConnection(control_socket)
     try:
         path = "/workspaces" if paperclip is None else f"/paperclip/companies/{paperclip[0]}/agents/{paperclip[1]}/workspace"
+        body = {"id": workspace}
+        if profile is not None:
+            body["profile"] = profile
         connection.request(
-            "POST", path, body=json.dumps({"id": workspace}),
+            "POST", path, body=json.dumps(body),
             headers={"Content-Type": "application/json"},
         )
         response = connection.getresponse()
@@ -220,7 +223,7 @@ def main(argv=None, paperclip_context=None):
     host_home = Path.home()
     service_home = host_home / ".local/share/environment-orchestrator"
     if paperclip is not None:
-        binding = workspace_binding(None, service_home / "control.sock", paperclip)
+        binding = workspace_binding(None, service_home / "control.sock", paperclip, os.environ.get("ENVIRONMENT_PROFILE"))
         workspace = binding["id"]
     state_home = service_home / "harnesses" / workspace
     private_directory(state_home)
@@ -231,7 +234,7 @@ def main(argv=None, paperclip_context=None):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError("Another harness already owns this workspace") from error
-        binding = workspace_binding(workspace, service_home / "control.sock")
+        binding = workspace_binding(workspace, service_home / "control.sock", profile=os.environ.get("ENVIRONMENT_PROFILE"))
         atomic_private_write(state_home / "environments.toml", environments_config(binding))
         bridge = None
         if paperclip_context:

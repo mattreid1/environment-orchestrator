@@ -14,7 +14,7 @@
   <header class="top">
     <div class="prompt"><span class="logo">✻</span> <span class="user" id="host">agent@host</span><span class="dim">:</span><span class="path">~</span><span class="dim">$</span> <span class="cmd">environments --watch</span><span class="cursor">▊</span></div>
     <div class="connection" id="connection"><span class="dot"></span><span id="connection-label">connecting</span><span class="dim" id="clock">—</span></div>
-    <div class="sysline"><span>firecracker / SWE</span><span id="service-version">rust orchestrator</span><span id="idle-policy">idle suspension —</span><span id="reserve-policy">host reserve —</span><span class="up" id="uptime">up —</span></div>
+    <div class="sysline"><span>firecracker / agent workspaces</span><span id="service-version">rust orchestrator</span><span id="idle-policy">idle suspension —</span><span id="reserve-policy">host reserve —</span><span class="up" id="uptime">up —</span></div>
   </header>
   <section class="stats" aria-label="Current readings">
     <div class="stat"><div class="k">workspaces</div><div class="v" id="workspace-count">—</div><div class="s" id="slot-count">configured slots</div></div>
@@ -53,11 +53,12 @@
       <div id="inspector" hidden>
         <div class="detail-grid">
           <div><div class="k">state / session</div><div class="v" id="detail-state"></div></div>
-          <div><div class="k">guest memory / admission bound</div><div class="v" id="detail-memory"></div></div>
+          <div><div class="k">guest memory / guest limit</div><div class="v" id="detail-memory"></div></div>
           <div><div class="k">persistent disk · actual / logical</div><div class="v" id="detail-disk"></div><div class="disk-track"><i id="disk-usage"></i></div></div>
           <div><div class="k">snapshot files / last snapshot</div><div class="v" id="detail-snapshot"></div></div>
           <div><div class="k">guest address</div><div class="v" id="detail-address"></div></div>
           <div><div class="k">idle suspension</div><div class="v" id="detail-idle"></div></div>
+          <div><div class="k">workspace profile</div><div class="v" id="detail-profile"></div></div>
           <div><div class="k">image</div><div class="v" id="detail-image"></div></div>
           <div><div class="k">wake / restore API</div><div class="v" id="detail-wake"></div></div>
         </div>
@@ -70,7 +71,7 @@
   </main>
   <footer class="status"><span class="tab">0:environments*</span><span id="footer-cpu">self — cpu</span><span id="footer-rss">— RSS</span><span class="grow"></span><a id="vitals-link" href="http://192.168.50.203:5400">vitals</a><a href="/api/dashboard" target="_blank" rel="noopener">api</a><span class="dim" id="port"></span></footer>
 </div>
-<dialog id="create-dialog"><form id="create-form"><h2>Create workspace</h2><p class="dim">Allocate a configured slot. This does not start its VM.</p><label for="workspace-id">Workspace ID</label><input id="workspace-id" name="id" required maxlength="48" pattern="[a-zA-Z0-9][a-zA-Z0-9_\-]{0,47}" placeholder="swe-project" autocomplete="off"><p id="create-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button type="button" data-close="create-dialog">Cancel</button><button type="submit" class="primary" id="create-submit">Create workspace</button></div></form></dialog>
+<dialog id="create-dialog"><form id="create-form"><h2>Create workspace</h2><p class="dim">Allocate a configured slot. This does not start its VM.</p><label for="workspace-id">Workspace ID</label><input id="workspace-id" name="id" required maxlength="48" pattern="[a-zA-Z0-9][a-zA-Z0-9_\-]{0,47}" placeholder="swe-project" autocomplete="off"><label for="workspace-profile">Profile</label><select id="workspace-profile" name="profile"><option value="swe">swe</option></select><p id="create-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button type="button" data-close="create-dialog">Cancel</button><button type="submit" class="primary" id="create-submit">Create workspace</button></div></form></dialog>
 <dialog id="confirm-dialog"><form id="confirm-form"><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="dialog-actions"><button type="button" data-close="confirm-dialog">Cancel</button><button type="submit" class="danger" id="confirm-submit">Confirm</button></div></form></dialog>
 </body>
 </html>

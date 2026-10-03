@@ -43,7 +43,8 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
             script = runner/'bin/microvm-run'
             script.write_text('#!/bin/sh\nprintf attempted >> "'+str(self.attempts)+'"\nexit 94\n')
             script.chmod(0o700)
-            slots.append({'runner':str(runner), 'firecracker':str(script), 'guest_host':'127.0.0.1'})
+            slots.append({'runner':str(runner), 'firecracker':str(script), 'guest_host':'127.0.0.1',
+                'memory_mb':3072, 'profiles':{name:{'runner':str(runner), 'memory_mb':3072} for name in ('swe','frontend','marketing','sales','research')}})
         self.environment = {**os.environ, 'ENVIRONMENT_STATE':str(self.state),
             'ENVIRONMENT_SLOTS':json.dumps(slots), 'ENVIRONMENT_PORT':str(self.port),
             'ENVIRONMENT_WEB_ADDR':f'127.0.0.1:{self.web_port}',
@@ -119,7 +120,7 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
     async def test_paperclip_creation_discovery_lazy_binding_and_auth_expiry(self):
         company='8744dbdb-cdd7-4fee-8b46-3bd6ae6705fe'
         agent='f3ccf705-bd33-4082-a266-3d06da1433b9'
-        row={'id':agent,'companyId':company,'name':'Hiring','status':'idle','adapterType':'codex_local','adapterConfig':{'secret':'not-for-dashboard'}}
+        row={'id':agent,'companyId':company,'name':'Hiring','status':'idle','adapterType':'codex_local','role':'cmo','adapterConfig':{'secret':'not-for-dashboard'}}
         fixture={'rows':[row], 'logins':0, 'session':1}
         async def login(request):
             self.assertEqual(await request.json(), {'email':'test@example.test','password':'fixture-password'})
@@ -164,6 +165,8 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
             binding=await self.api(path,'POST',{})
             self.assertEqual((await self.api(path,'POST',{}))['id'],binding['id'])
             self.assertTrue(binding['id'].startswith('pc-'))
+            self.assertEqual(binding['profile'],'marketing')
+            self.assertEqual(catalog['agents'][0]['profile'],'marketing')
             self.assertFalse(self.attempts.exists(),'Discovery and binding must not boot guests')
             fresh='25dc15d4-4f72-443b-ae5a-d4213a54c917'
             fixture['rows'].append({**row,'id':fresh,'name':'New hire'})
@@ -239,6 +242,37 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
         await self.stop_service()
         await self.start_service()
         self.assertEqual(await self.allocate(), binding)
+        self.assertFalse(self.attempts.exists())
+
+    async def test_profile_selection_persists_and_conflicts_never_replace_workspace(self):
+        await self.api(method='POST', payload={'id':'alpha','profile':'missing'}, expected=409)
+        await self.api(method='POST', payload={'id':'alpha','profile':3}, expected=400)
+        self.assertEqual((await self.api())['workspaces'], [])
+        binding=await self.api(method='POST',payload={'id':'alpha','profile':'frontend'})
+        self.assertEqual(binding['profile'],'frontend')
+        self.assertEqual(binding['configured_memory_mb'],3072)
+        await self.stop_service()
+        await self.start_service()
+        self.assertEqual(await self.allocate(),binding)
+        await self.api(method='POST',payload={'id':'alpha','profile':'swe'},expected=409)
+        visible=await self.web('/api/workspaces',method='POST',payload={'id':'beta','profile':'research'})
+        self.assertEqual(visible['profile'],'research')
+        self.assertNotIn('auth_bearer_token',visible)
+        self.assertEqual((await self.api())['profiles'],['frontend','marketing','research','sales','swe'])
+        self.assertFalse(self.attempts.exists())
+
+    async def test_legacy_checkpoint_keeps_original_memory_bound(self):
+        await self.allocate()
+        await self.stop_service()
+        metadata=self.state/'workspaces/alpha/state.json'
+        metadata.write_text(json.dumps({'state':'suspended','runner':'old-image','snapshot':'snapshot-fixture'}))
+        await self.start_service()
+        status=await self.api('/workspaces/alpha')
+        self.assertEqual(status['memory_bound_bytes'],1024**3)
+        self.assertEqual(status['configured_memory_mb'],3072)
+        self.assertEqual(status['runner'],'old-image')
+        dashboard=await self.web()
+        self.assertEqual(dashboard['workspaces'][0]['memory_bound_bytes'],1024**3)
         self.assertFalse(self.attempts.exists())
 
     async def test_pending_operation_is_unknown_after_restart_without_replay(self):

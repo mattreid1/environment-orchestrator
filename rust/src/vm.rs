@@ -21,6 +21,7 @@ pub struct VmConfig {
     pub runner: String,
     pub firecracker: String,
     pub guest_host: String,
+    pub memory_mb: u64,
 }
 
 pub struct Vm {
@@ -206,6 +207,16 @@ fn firecracker_client(directory: &File) -> Result<Client> {
         .build()?)
 }
 
+fn effective_memory_mb(meta: &Value, configured: u64) -> u64 {
+    if meta.get("runner").is_some() && meta["state"] != "stopped" {
+        // Pre-profile checkpoints were always 1 GiB. A new image must never
+        // relabel the memory configuration of an existing saved generation.
+        meta["memory_mb"].as_u64().unwrap_or(1024)
+    } else {
+        configured
+    }
+}
+
 impl Vm {
     pub fn new(mut config: VmConfig) -> Result<Self> {
         fs::create_dir_all(&config.state)?;
@@ -311,6 +322,10 @@ impl Vm {
         result["guest_host"] = json!(self.config.guest_host);
         result["guest_user"] = json!("agent");
         result["headless"] = json!(true);
+        result["memory_mb"] = json!(effective_memory_mb(&self.meta, self.config.memory_mb));
+        result["memory_bound_bytes"] =
+            json!(effective_memory_mb(&self.meta, self.config.memory_mb) * 1024 * 1024);
+        result["configured_memory_mb"] = json!(self.config.memory_mb);
         result["orphan_pid"] = json!(orphan);
         result["recovery_required"] = json!(
             self.lifecycle_error.is_some()
@@ -487,7 +502,7 @@ impl Vm {
             self.retain("guest", &runner).await?;
             self.retain("firecracker", &store_closure(&firecracker)?)
                 .await?;
-            self.save(json!({"state": "running", "runner": runner, "firecracker": firecracker}))?;
+            self.save(json!({"state": "running", "runner": runner, "firecracker": firecracker, "memory_mb": self.config.memory_mb}))?;
             self.spawn(&self.config.state.join("guest/bin/microvm-run"), &[])
                 .await?;
             api_ms = Value::Null;
@@ -724,6 +739,7 @@ mod tests {
         let vm = Vm::new(VmConfig {
             state: directory.path().to_path_buf(),
             runner: "/not-used".into(),
+            memory_mb: 3072,
             firecracker: "/not-used".into(),
             guest_host: "127.0.0.1".into(),
         })?;
@@ -873,5 +889,31 @@ mod long_socket_path_tests {
         assert!(response.status().is_success());
         assert_eq!(response.text().await.unwrap(), "{}");
         server.join().unwrap();
+    }
+    #[test]
+    fn saved_memory_bound_survives_image_configuration_update() {
+        assert_eq!(effective_memory_mb(&json!({"state":"new"}), 3072), 3072);
+        assert_eq!(
+            effective_memory_mb(&json!({"state":"suspended","runner":"old"}), 3072),
+            1024
+        );
+        assert_eq!(
+            effective_memory_mb(
+                &json!({"state":"suspended","runner":"old","memory_mb":2048}),
+                3072
+            ),
+            2048
+        );
+        assert_eq!(
+            effective_memory_mb(&json!({"state":"stopped","runner":"old"}), 3072),
+            3072
+        );
+        assert_eq!(
+            effective_memory_mb(
+                &json!({"state":"running","runner":"new","memory_mb":3072}),
+                3072
+            ),
+            3072
+        );
     }
 }

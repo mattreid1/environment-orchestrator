@@ -1,10 +1,10 @@
-{ pkgs, codex ? pkgs.codex }:
+{ pkgs, codex ? pkgs.codex, claude ? pkgs.claude-code }:
 let
   python = pkgs.python3.withPackages (p: [ p.aiohttp ]);
-  path = pkgs.lib.makeBinPath [ python codex pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
+  path = pkgs.lib.makeBinPath [ python codex claude pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
 in pkgs.rustPlatform.buildRustPackage {
   pname = "environment-orchestrator";
-  version = "0.3.0";
+  version = "0.4.0";
   src = ./rust;
   cargoLock.lockFile = ./rust/Cargo.lock;
   nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
@@ -20,9 +20,12 @@ in pkgs.rustPlatform.buildRustPackage {
     cp ${./codex.py} $out/lib/environment-orchestrator/codex.py
     cp ${./paperclip_codex.py} $out/lib/environment-orchestrator/paperclip_codex.py
     cp ${./paperclip_mcp.py} $out/lib/environment-orchestrator/paperclip_mcp.py
+    cp ${./claude.py} $out/lib/environment-orchestrator/claude.py
+    cp ${./paperclip_claude.py} $out/lib/environment-orchestrator/paperclip_claude.py
+    cp ${./guest_mcp.py} $out/lib/environment-orchestrator/guest_mcp.py
     wrapProgram $out/bin/environment-orchestrator --prefix PATH : ${path}
     ln -s environment-orchestrator $out/bin/environment-orchestrator-service
-    for entry in 'cli environment-vm' 'codex environment-codex' 'paperclip_codex environment-paperclip-codex'; do
+    for entry in 'cli environment-vm' 'codex environment-codex' 'paperclip_codex environment-paperclip-codex' 'claude environment-claude' 'paperclip_claude environment-paperclip-claude'; do
       set -- $entry
       makeWrapper ${python}/bin/python3 $out/bin/$2 --add-flags $out/lib/environment-orchestrator/$1.py --prefix PATH : ${path}
     done

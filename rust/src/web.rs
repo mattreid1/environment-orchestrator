@@ -285,11 +285,17 @@ async fn create(
     State(web): State<Arc<Web>>,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let id = match body
-        .ok()
-        .and_then(|Json(value)| value.get("id").and_then(Value::as_str).map(str::to_owned))
-    {
-        Some(id) if crate::manager::valid_id(&id) => id,
+    let value = match body {
+        Ok(Json(value)) => value,
+        Err(_) => {
+            return crate::error(
+                StatusCode::BAD_REQUEST,
+                "Request body must be a JSON object",
+            );
+        }
+    };
+    let id = match value.get("id").and_then(Value::as_str) {
+        Some(id) if crate::manager::valid_id(id) => id,
         _ => {
             return crate::error(
                 StatusCode::BAD_REQUEST,
@@ -297,7 +303,14 @@ async fn create(
             );
         }
     };
-    match web.manager.allocate(&id) {
+    let profile = value.get("profile").and_then(Value::as_str);
+    if value.get("profile").is_some() && profile.is_none() {
+        return crate::error(
+            StatusCode::BAD_REQUEST,
+            "Workspace profile must be a string",
+        );
+    }
+    match web.manager.allocate_profile(id, profile) {
         Ok(mut binding) => {
             binding.as_object_mut().unwrap().remove("auth_bearer_token");
             web.refresh();

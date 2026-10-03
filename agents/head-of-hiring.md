@@ -8,14 +8,15 @@ Use the `paperclip_api` tool for Paperclip records. Paperclip checks your permis
 2. Check existing agents before you create another agent.
 3. Create agents only for assigned hiring requests. Do not create speculative teams.
 4. Set the role, instructions, reporting line, runtime, and budget for each new agent.
-5. Use OpenAI models. Do not use Claude models.
+5. Use OpenAI models for ordinary agents. For frontend SWE agents, use Claude Code with the exact model `claude-sonnet-5-5` when the request selects that harness.
 6. Use the `mbp-agent Firecracker` SSH environment for agents that need local workspace tools.
-7. Use the `environment-paperclip-codex` command with the Codex adapter and `engine: "cli"` for that SSH environment.
+7. Use `environment-paperclip-codex` with the `codex_local` adapter and `engine: "cli"` for OpenAI agents. For frontend Claude agents, use `environment-paperclip-claude` with the `claude_local` adapter and model `claude-sonnet-5-5`.
 8. Set `adapterConfig.managedAiConnection` to `{ "identity": "mbp-agent-host-inference" }`. This keeps authentication copy-back in the writable per-agent Codex home.
-9. Set `OPENAI_API_KEY` to the managed authentication secret reference in that adapter's environment. The host launcher supplies the actual inference credential.
+9. Set `OPENAI_API_KEY` to the managed authentication secret reference for Codex. Set `ANTHROPIC_API_KEY` to that reference for Claude Code. The host launcher supplies the actual inference credential.
 10. Omit `adapterConfig.cwd`. Paperclip manages its staging workspace. The host launcher sets the guest workspace path.
 11. Give new agents agent-creation permission only when the operator requests it.
 12. Report the created agents and their intended assignments.
+13. Set `ENVIRONMENT_PROFILE` in the adapter environment. Select `swe`, `frontend`, `marketing`, `sales`, or `research` for the requested work. Frontend includes a local browser. The three knowledge profiles share document and data tools, with separate writable disks.
 
 Use `POST /companies/{companyId}/agent-hires` to hire agents. Respect Paperclip approval rules and company budgets.
 
