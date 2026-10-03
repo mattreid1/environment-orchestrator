@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let data = null, selected = null, filter = "all", connected = false, source = null, confirmation = null;
 const pending = new Map();
+let messageTimer;
 const bytes = value => {
   if (value == null) return "—";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -18,7 +19,11 @@ const state = row => attention(row) ? "recovery required" : row.state;
 const busy = row => pending.has(row.id) || row.state === "transitioning";
 const usable = row => connected && !busy(row);
 
-function message(text, error = false) { $("message").textContent = text; $("message").classList.toggle("error", error); $("message").hidden = false; }
+function message(text, error = false) {
+  clearTimeout(messageTimer);
+  $("message").textContent = text; $("message").classList.toggle("error", error); $("message").hidden = false;
+  if (!error) messageTimer = setTimeout(() => { $("message").hidden = true; }, 8000);
+}
 function setConnection(value) {
   connected = value;
   $("connection").className = `connection ${value ? "live" : "down"}`;
@@ -109,7 +114,7 @@ function render() {
     const diskPercent = row.disk_bytes ? Math.min(100, row.disk_allocated_bytes / row.disk_bytes * 100) : 0;
     const idleLeft = Math.max(0, data.idle_seconds - row.idle_elapsed_seconds);
     $("inspector").className = "";
-    $("inspector").innerHTML = `<div class="detail-grid"><div><div class="k">state / session</div><div class="v">${escapeHTML(state(row))} · ${row.writer_connected ? "attached" : "detached"}</div></div><div><div class="k">guest memory / admission bound</div><div class="v">${awake(row) ? bytes(row.rss_bytes) : "no VMM process"} / ${bytes(row.memory_bound_bytes)}</div></div><div><div class="k">persistent disk · actual / logical</div><div class="v">${bytes(row.disk_allocated_bytes)} / ${bytes(row.disk_bytes)}</div><div class="disk-track"><i id="disk-usage"></i></div></div><div><div class="k">snapshot files / last snapshot</div><div class="v">${bytes(row.checkpoint_bytes)} / ${latency(row.last_suspend_ms)}</div></div><div><div class="k">guest address</div><div class="v">${escapeHTML(row.guest_host)}</div></div><div><div class="k">idle suspension</div><div class="v">${awake(row) ? data.idle_seconds <= 0 ? "disabled" : row.active_operations ? "held by execution lease" : `in ${duration(idleLeft)}` : "not running"}</div></div><div><div class="k">image</div><div class="v">${escapeHTML(image)}</div></div><div><div class="k">restore / Firecracker API</div><div class="v">${latency(row.last_wake_ms)} / ${latency(row.last_restore_api_ms)}</div></div></div><div class="launch"><label for="launch-command">Start an agent · run this on ${escapeHTML(data.hostname)}</label><div class="command"><input id="launch-command" readonly value="environment-codex ${row.id}" aria-label="Host launcher command"><button id="copy-command">Copy</button></div></div><div class="advanced"><button id="control-shutdown" data-action="shutdown" data-id="${row.id}" ${controlsDisabled || attention(row) ? "disabled" : ""}>Shut down</button>${attention(row) ? `<button class="danger" id="control-recover" data-action="recover" data-id="${row.id}" ${controlsDisabled ? "disabled" : ""}>Recover saved files</button>` : ""}<span class="dim">shutdown discards the memory session</span></div>${row.lifecycle_error || row.error ? `<p class="detail-error">${escapeHTML(row.lifecycle_error || row.error)}</p>` : ""}`;
+    $("inspector").innerHTML = `<div class="detail-grid"><div><div class="k">state / session</div><div class="v">${escapeHTML(state(row))} · ${row.writer_connected ? "attached" : "detached"}</div></div><div><div class="k">guest memory / admission bound</div><div class="v">${awake(row) ? bytes(row.rss_bytes) : "no VMM process"} / ${bytes(row.memory_bound_bytes)}</div></div><div><div class="k">persistent disk · actual / logical</div><div class="v">${bytes(row.disk_allocated_bytes)} / ${bytes(row.disk_bytes)}</div><div class="disk-track"><i id="disk-usage"></i></div></div><div><div class="k">snapshot files / last snapshot</div><div class="v">${bytes(row.checkpoint_bytes)} / ${latency(row.last_suspend_ms)}</div></div><div><div class="k">guest address</div><div class="v">${escapeHTML(row.guest_host)}</div></div><div><div class="k">idle suspension</div><div class="v">${awake(row) ? data.idle_seconds <= 0 ? "disabled" : row.active_operations ? "held by execution lease" : `in ${duration(idleLeft)}` : "not running"}</div></div><div><div class="k">image</div><div class="v">${escapeHTML(image)}</div></div><div><div class="k">wake / restore API</div><div class="v">${latency(row.last_wake_ms)} / ${latency(row.last_restore_api_ms)}</div></div></div><div class="launch"><label for="launch-command">Start an agent · run this on ${escapeHTML(data.hostname)}</label><div class="command"><input id="launch-command" readonly value="environment-codex ${row.id}" aria-label="Host launcher command"><button id="copy-command">Copy</button></div></div><div class="advanced"><button id="control-shutdown" data-action="shutdown" data-id="${row.id}" ${controlsDisabled || attention(row) ? "disabled" : ""}>Shut down</button>${attention(row) ? `<button class="danger" id="control-recover" data-action="recover" data-id="${row.id}" ${controlsDisabled ? "disabled" : ""}>Recover saved files</button>` : ""}<span class="dim">shutdown discards the memory session</span></div>${row.lifecycle_error || row.error ? `<p class="detail-error">${escapeHTML(row.lifecycle_error || row.error)}</p>` : ""}`;
     $("disk-usage").style.width = `${diskPercent}%`;
   } else { $("inspector").textContent = "Select a workspace to inspect its persistent disk and checkpoint."; }
   $("activity").innerHTML = data.recent_operations.map(operation => {
