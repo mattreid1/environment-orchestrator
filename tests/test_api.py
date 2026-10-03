@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, UnixConnector, WSServerHandshakeError
+from aiohttp import ClientError, ClientSession, ClientTimeout, UnixConnector, WSServerHandshakeError, web
 
 
 def free_port():
@@ -115,6 +115,72 @@ class PackagedAPI(unittest.IsolatedAsyncioTestCase):
                 except json.JSONDecodeError:
                     return {'error':body}
             return json.loads(body)
+
+    async def test_paperclip_creation_discovery_lazy_binding_and_auth_expiry(self):
+        company='8744dbdb-cdd7-4fee-8b46-3bd6ae6705fe'
+        agent='f3ccf705-bd33-4082-a266-3d06da1433b9'
+        row={'id':agent,'companyId':company,'name':'Hiring','status':'idle','adapterType':'codex_local','adapterConfig':{'secret':'not-for-dashboard'}}
+        fixture={'rows':[row], 'logins':0, 'session':1}
+        async def login(request):
+            self.assertEqual(await request.json(), {'email':'test@example.test','password':'fixture-password'})
+            fixture['logins']+=1
+            response=web.json_response({'token':'not-for-dashboard'})
+            response.set_cookie('paperclip-test.session_token',str(fixture['session']))
+            return response
+        async def agents(request):
+            if request.cookies.get('paperclip-test.session_token') != str(fixture['session']):
+                return web.json_response({'error':'fixture-secret'},status=401)
+            return web.json_response(fixture['rows'])
+        app=web.Application()
+        app.router.add_post('/api/auth/sign-in/email',login)
+        app.router.add_get(f'/api/companies/{company}/agents',agents)
+        runner=web.AppRunner(app)
+        await runner.setup()
+        port=free_port()
+        await web.TCPSite(runner,'127.0.0.1',port).start()
+        try:
+            login_file=self.folder/'login.json'
+            login_file.write_text(json.dumps({'email':'test@example.test','password':'fixture-password'}))
+            login_file.chmod(0o600)
+            config=self.state/'paperclip.json'
+            config.write_text(json.dumps({'base_url':f'http://127.0.0.1:{port}','login_file':str(login_file),'companies':[{'id':company,'name':'Test','prefix':'TEST'}]}))
+            config.chmod(0o600)
+            await self.stop_service()
+            await self.start_service()
+            async def catalog_until(predicate):
+                deadline=time.monotonic()+35
+                while time.monotonic()<deadline:
+                    async with self.client.get(self.web_url+'/api/dashboard') as response:
+                        data=await response.json()
+                    if predicate(data['paperclip']): return data['paperclip']
+                    await asyncio.sleep(.2)
+                self.fail('Paperclip catalog did not reach its expected state')
+            catalog=await catalog_until(lambda c:c['connected'] and len(c['agents'])==1)
+            self.assertIsNone(catalog['agents'][0]['workspace_id'])
+            self.assertEqual((await self.api())['workspaces'],[])
+            self.assertNotIn('fixture-password',json.dumps(catalog))
+            self.assertNotIn('not-for-dashboard',json.dumps(catalog))
+            path=f'/paperclip/companies/{company}/agents/{agent}/workspace'
+            binding=await self.api(path,'POST',{})
+            self.assertEqual((await self.api(path,'POST',{}))['id'],binding['id'])
+            self.assertTrue(binding['id'].startswith('pc-'))
+            self.assertFalse(self.attempts.exists(),'Discovery and binding must not boot guests')
+            fresh='25dc15d4-4f72-443b-ae5a-d4213a54c917'
+            fixture['rows'].append({**row,'id':fresh,'name':'New hire'})
+            immediate=await self.api(f'/paperclip/companies/{company}/agents/{fresh}/workspace','POST',{})
+            self.assertNotEqual(immediate['id'],binding['id'],'A new hire must bind before the next catalog poll')
+            before=fixture['logins']
+            fixture['session']=2
+            await catalog_until(lambda c:not c['connected'])
+            await catalog_until(lambda c:c['connected'])
+            self.assertEqual(fixture['logins'],before+1)
+            fixture['rows']=[]
+            catalog=await catalog_until(lambda c:c['agents'] and not c['agents'][0]['present'])
+            self.assertEqual(catalog['agents'][0]['workspace_id'],binding['id'])
+            await self.api(path,'POST',{},expected=409)
+            self.assertEqual(len((await self.api())['workspaces']),2,'Removed agents must retain workspace files')
+        finally:
+            await runner.cleanup()
 
     async def allocate(self, name='alpha'):
         return await self.api(method='POST', payload={'id':name})

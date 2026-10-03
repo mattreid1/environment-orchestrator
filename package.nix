@@ -18,9 +18,11 @@ in pkgs.rustPlatform.buildRustPackage {
     mkdir -p $out/lib/environment-orchestrator
     cp ${./cli.py} $out/lib/environment-orchestrator/cli.py
     cp ${./codex.py} $out/lib/environment-orchestrator/codex.py
+    cp ${./paperclip_codex.py} $out/lib/environment-orchestrator/paperclip_codex.py
+    cp ${./paperclip_mcp.py} $out/lib/environment-orchestrator/paperclip_mcp.py
     wrapProgram $out/bin/environment-orchestrator --prefix PATH : ${path}
     ln -s environment-orchestrator $out/bin/environment-orchestrator-service
-    for entry in 'cli environment-vm' 'codex environment-codex'; do
+    for entry in 'cli environment-vm' 'codex environment-codex' 'paperclip_codex environment-paperclip-codex'; do
       set -- $entry
       makeWrapper ${python}/bin/python3 $out/bin/$2 --add-flags $out/lib/environment-orchestrator/$1.py --prefix PATH : ${path}
     done

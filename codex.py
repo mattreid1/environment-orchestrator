@@ -51,11 +51,12 @@ def atomic_private_write(path, contents):
             os.unlink(temporary)
 
 
-def workspace_binding(workspace, control_socket):
+def workspace_binding(workspace, control_socket, paperclip=None):
     connection = UnixConnection(control_socket)
     try:
+        path = "/workspaces" if paperclip is None else f"/paperclip/companies/{paperclip[0]}/agents/{paperclip[1]}/workspace"
         connection.request(
-            "POST", "/workspaces", body=json.dumps({"id": workspace}),
+            "POST", path, body=json.dumps({"id": workspace}),
             headers={"Content-Type": "application/json"},
         )
         response = connection.getresponse()
@@ -65,6 +66,10 @@ def workspace_binding(workspace, control_socket):
             raise RuntimeError(f"Workspace binding failed (HTTP {response.status})")
     finally:
         connection.close()
+    if paperclip is not None:
+        workspace = payload.get("id")
+        if not isinstance(workspace, str) or not WORKSPACE_ID.fullmatch(workspace):
+            raise RuntimeError("Orchestrator returned an invalid Paperclip workspace")
     if payload.get("id") != workspace:
         raise RuntimeError("Orchestrator returned the wrong workspace")
     expected = f"ws://127.0.0.1:6090/workspaces/{workspace}/exec"
@@ -90,8 +95,8 @@ def environments_config(binding):
     )
 
 
-def harness_config():
-    return f'''model = "{DEFAULT_MODEL}"
+def harness_config(paperclip_context=None):
+    config = f'''model = "{DEFAULT_MODEL}"
 model_provider = "environment_inference"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -108,7 +113,7 @@ supports_websockets = false
 [shell_environment_policy]
 inherit = "core"
 ignore_default_excludes = false
-exclude = ["{PROVIDER_KEY_ENV}", "OPENAI_API_KEY", "CODEX_API_KEY", "*SECRET*", "*TOKEN*"]
+exclude = ["{PROVIDER_KEY_ENV}", "OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_API_KEY", "*SECRET*", "*TOKEN*"]
 
 [features]
 apps = false
@@ -122,6 +127,14 @@ in_app_local_automation = false
 code_mode_host = true
 multi_agent = false
 '''
+    if paperclip_context:
+        config += '\n[mcp_servers.paperclip]\n'
+        config += f'command = {json.dumps(sys.executable)}\n'
+        config += f'args = [{json.dumps(str(Path(__file__).with_name("paperclip_mcp.py")))}]\n'
+        config += '\n[mcp_servers.paperclip.env]\n'
+        for name, value in paperclip_context.items():
+            config += f'{name} = {json.dumps(value)}\n'
+    return config
 
 
 def validate_codex_arguments(arguments):
@@ -178,14 +191,26 @@ def isolated_command(bwrap, codex, state_home, host_home, guest_path, arguments)
     return command
 
 
-def main(argv=None):
+def main(argv=None, paperclip_context=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0] in ("-h", "--help"):
         print("Usage: environment-codex WORKSPACE [codex arguments]")
+        print("       environment-codex --paperclip COMPANY_UUID AGENT_UUID [codex arguments]")
         print("Examples: environment-codex demo; environment-codex demo exec --json 'Inspect this project'")
         return 0
-    workspace, codex_arguments = arguments[0], arguments[1:]
-    if not WORKSPACE_ID.fullmatch(workspace):
+    paperclip = None
+    if arguments[0] == "--paperclip":
+        import uuid
+        if len(arguments) < 3:
+            raise RuntimeError("Paperclip mode requires company and agent UUIDs")
+        try:
+            paperclip = tuple(str(uuid.UUID(value)) for value in arguments[1:3])
+        except ValueError as error:
+            raise RuntimeError("Paperclip mode requires company and agent UUIDs") from error
+        workspace, codex_arguments = None, arguments[3:]
+    else:
+        workspace, codex_arguments = arguments[0], arguments[1:]
+    if paperclip is None and not WORKSPACE_ID.fullmatch(workspace):
         raise RuntimeError("Workspace IDs need a lowercase letter, then up to 47 lowercase letters, digits, underscores, or hyphens")
     validate_codex_arguments(codex_arguments)
     bwrap = shutil.which("bwrap")
@@ -195,6 +220,9 @@ def main(argv=None):
     codex = os.path.realpath(codex)
     host_home = Path.home()
     service_home = host_home / ".local/share/environment-orchestrator"
+    if paperclip is not None:
+        binding = workspace_binding(None, service_home / "control.sock", paperclip)
+        workspace = binding["id"]
     state_home = service_home / "harnesses" / workspace
     private_directory(state_home)
     lock_path = state_home / "launcher.lock"
@@ -206,7 +234,7 @@ def main(argv=None):
             raise RuntimeError("Another harness already owns this workspace") from error
         binding = workspace_binding(workspace, service_home / "control.sock")
         atomic_private_write(state_home / "environments.toml", environments_config(binding))
-        atomic_private_write(state_home / "config.toml", harness_config())
+        atomic_private_write(state_home / "config.toml", harness_config(paperclip_context))
         key_path = host_home / ".config/desktop-broker/inference-key"
         if key_path.is_symlink() or key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:
             raise RuntimeError("The inference key file must be owned by this user with mode 0600")

@@ -25,7 +25,7 @@ flowchart LR
 
 The administrative API uses a private Unix socket. The execution gateway listens on loopback port 6090. Each workspace has a separate capability, disk, SSH key, executor session, and conversation directory. One harness can own a workspace at a time.
 
-The first deployment provides two fixed workspace slots. Each guest has two vCPUs, 1 GiB RAM, and an 8 GiB sparse persistent disk. The service can accept a different slot list. Automatic slot creation and recycling are later work.
+The mbp-agent deployment provides four fixed workspace slots, including two existing demo workspaces. Each guest has two vCPUs, 1 GiB RAM, and an 8 GiB sparse persistent disk. The service can accept a different slot list. Automatic slot creation and recycling are later work.
 
 The Codex launcher uses remote execution for shell, processes, files, patches, images, and project instructions. Bubblewrap hides host workspace files and credentials from the harness. It exposes immutable Nix tools, shared skills, and private conversation state. See [Codex routing](CODEX.md).
 
@@ -114,7 +114,7 @@ Keep the runtime directory private and outside Git. RAM checkpoints can contain 
 
 The current guest image has an immutable Nix store. Add toolchains through its NixOS configuration until durable package installation exists. Automated image migration, maintenance queues, and agent update notices remain later milestones.
 
-Paperclip integration, Browser Use sharing, and NAS backups also remain later work. NAS backups must deduplicate shared image files and repeated workspace data. Do not create an independent full image copy for every agent. See the [PRD](docs/PRD.md) and [update design](docs/updates.md).
+Paperclip discovery and the SSH Codex launcher are described in [Paperclip integration](docs/paperclip.md). Browser Use sharing and NAS backups remain later work. NAS backups must deduplicate shared image files and repeated workspace data. Do not create an independent full image copy for every agent. See the [PRD](docs/PRD.md) and [update design](docs/updates.md).
 
 ## Validation
 

@@ -1,4 +1,5 @@
 mod manager;
+mod paperclip;
 mod proxy;
 mod vm;
 mod web;
@@ -148,6 +149,7 @@ async fn main() -> Result<()> {
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
     let tcp = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, settings.port)).await?;
     let manager = Manager::new(settings)?;
+    let paperclip = paperclip::Catalog::new(&socket_path.parent().unwrap())?;
     let web_config = web::Config::from_env()?;
     let web_listener = if let Some(config) = &web_config {
         Some(tokio::net::TcpListener::bind(config.address).await?)
@@ -158,7 +160,15 @@ async fn main() -> Result<()> {
         .route("/workspaces", get(list).post(create))
         .route("/workspaces/{id}", get(status))
         .route("/workspaces/{id}/{action}", post(action))
-        .with_state(manager.clone());
+        .with_state(manager.clone())
+        .merge(
+            Router::new()
+                .route(
+                    "/paperclip/companies/{company}/agents/{agent}/workspace",
+                    post(paperclip::bind),
+                )
+                .with_state((paperclip.clone(), manager.clone())),
+        );
     let gateway = Router::new()
         .route("/workspaces/{id}/exec", get(proxy::handler))
         .with_state(manager.clone());
@@ -175,8 +185,9 @@ async fn main() -> Result<()> {
             .await
     });
     let idle_task = tokio::spawn(manager.clone().idle_loop());
+    let paperclip_task = tokio::spawn(paperclip.clone().run(manager.shutdown_token.clone()));
     let web_tasks = if let (Some(config), Some(listener)) = (web_config, web_listener) {
-        let state = web::Web::new(manager.clone(), &config);
+        let state = web::Web::new(manager.clone(), paperclip, &config);
         let router = web::router(state.clone());
         let cancel = manager.shutdown_token.clone();
         tracing::info!(address=%config.address,"Dashboard is ready");
@@ -201,6 +212,7 @@ async fn main() -> Result<()> {
     let result = manager.stop().await;
     manager.shutdown_token.cancel();
     idle_task.await?;
+    paperclip_task.await?;
     // Upgraded WebSockets drain through Manager::stop, rather than HTTP shutdown.
     admin_task.await??;
     gateway_task.await??;

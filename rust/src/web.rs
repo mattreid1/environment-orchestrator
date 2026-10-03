@@ -63,6 +63,7 @@ struct Collector {
 }
 pub struct Web {
     manager: Arc<Manager>,
+    paperclip: Arc<crate::paperclip::Catalog>,
     hosts: Vec<String>,
     hostname: String,
     collector: Mutex<Collector>,
@@ -92,10 +93,15 @@ fn cpu_ticks(contents: &str) -> Option<u64> {
 }
 
 impl Web {
-    pub fn new(manager: Arc<Manager>, config: &Config) -> Arc<Self> {
+    pub fn new(
+        manager: Arc<Manager>,
+        paperclip: Arc<crate::paperclip::Catalog>,
+        config: &Config,
+    ) -> Arc<Self> {
         let (latest, _) = watch::channel(Arc::new(json!({})));
         let web = Arc::new(Self {
             manager,
+            paperclip,
             hosts: config.hosts.clone(),
             hostname: fs::read_to_string("/proc/sys/kernel/hostname")
                 .unwrap_or_else(|_| "host".into())
@@ -115,6 +121,7 @@ impl Web {
     fn refresh(&self) {
         let mut collector = self.collector.lock().unwrap();
         let mut data = self.manager.observation();
+        data["paperclip"] = self.paperclip.snapshot();
         let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
         let available = keyed_number(&meminfo, "MemAvailable:").unwrap_or(0) * 1024;
         let total = keyed_number(&meminfo, "MemTotal:").unwrap_or(0) * 1024;

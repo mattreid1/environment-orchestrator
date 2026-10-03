@@ -4,6 +4,7 @@ const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"
 let data = null, selected = null, filter = "all", connected = false, source = null, confirmation = null;
 const pending = new Map();
 const charts = new Map(), workspaceRows = new Map();
+const agentRows = new Map();
 let messageTimer;
 const bytes = value => {
   if (value == null) return "—";
@@ -198,6 +199,40 @@ function renderInspector(rows) {
   $("detail-error").textContent = row.lifecycle_error || row.error || ""; $("detail-error").hidden = !$("detail-error").textContent;
 }
 
+function renderAgents() {
+  const catalog = data.paperclip;
+  $("paperclip-panel").hidden = !catalog?.configured && !catalog?.agents?.length;
+  if (!catalog) return;
+  $("paperclip-status").textContent = !catalog.configured ? "sync disabled · saved records" : catalog.connected ? `live · synced ${new Date(catalog.last_synced * 1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"})}` : "offline · saved records";
+  $("paperclip-note").textContent = catalog.error || "Paperclip owns agent creation. A workspace is allocated on first use. Unallocated agents use no VM slots.";
+  $("paperclip-note").classList.toggle("error", !!catalog.error);
+  const body = $("paperclip-agents"), ids = new Set(catalog.agents.map(agent => `${agent.company_id}/${agent.id}`));
+  for (const child of [...body.children]) if (!ids.has(child.dataset.agent)) child.remove();
+  catalog.agents.forEach((agent, index) => {
+    const key = `${agent.company_id}/${agent.id}`;
+    let row = agentRows.get(key);
+    if (!row) {
+      row = document.createElement("tr"); row.dataset.agent = key;
+      row.innerHTML = '<td><a class="agent-name" target="_blank" rel="noopener"></a></td><td class="agent-company"></td><td class="agent-status"></td><td class="agent-adapter dim"></td><td><button class="agent-workspace workspace-name"></button><span class="agent-unallocated dim"></span></td>';
+      agentRows.set(key,row);
+    }
+    const name = row.querySelector(".agent-name"); name.textContent = agent.name; name.href = agent.url;
+    row.querySelector(".agent-company").textContent = agent.company_name;
+    row.querySelector(".agent-status").textContent = agent.present ? agent.status : "removed from Paperclip";
+    row.querySelector(".agent-adapter").textContent = agent.adapter_type;
+    const workspace = data.workspaces.find(workspace => workspace.id === agent.workspace_id);
+    const control = row.querySelector(".agent-workspace"), label = row.querySelector(".agent-unallocated");
+    control.hidden = !workspace; label.hidden = !!workspace;
+    control.textContent = workspace ? `${workspace.id} · ${state(workspace)}` : "";
+    if (workspace) { control.dataset.inspect = workspace.id; control.setAttribute("aria-controls", "inspector-panel"); }
+    else delete control.dataset.inspect;
+    label.textContent = agent.workspace_id ? "waiting for a configured slot" : "not allocated";
+    if (body.children[index] !== row) body.insertBefore(row, body.children[index] ?? null);
+  });
+  if (!catalog.agents.length) body.innerHTML = '<tr><td class="empty" colspan="5">No Paperclip agents discovered.</td></tr>';
+  for (const key of agentRows.keys()) if (!ids.has(key)) agentRows.delete(key);
+}
+
 function render() {
   if (!data) return;
   const rows = data.workspaces, running = rows.filter(awake).length;
@@ -224,6 +259,7 @@ function render() {
   $("new-workspace").disabled = !connected || rows.length >= data.slots;
   const visible = rows.filter(row => filter === "all" || (filter === "awake" && awake(row)) || (filter === "suspended" && row.state === "suspended") || (filter === "attention" && attention(row)));
   renderWorkspaces(visible);
+  renderAgents();
   $("legend-awake").textContent = running; $("legend-leases").textContent = leases; $("legend-queued").textContent = queued;
   const required = data.host_reserve_bytes + (running + 1) * 1024 ** 3;
   $("legend-available").textContent = bytes(data.host.available_bytes); $("legend-required").textContent = bytes(required);
