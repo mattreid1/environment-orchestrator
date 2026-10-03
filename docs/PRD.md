@@ -2,7 +2,7 @@
 
 Status: Draft · 2026-10-03
 
-Implementation started. See [Initial environment orchestrator implementation](implementation.md) for the installed first release, measured results, and remaining milestones.
+Implementation started. See the [service README](../README.md) for the current release and remaining milestones.
 
 Build a local platform that runs many agent sessions on `mbp-agent`. Each task receives an isolated execution environment when it needs one. Paperclip coordinates work. A host harness sends filesystem and shell operations to Firecracker microVMs through an environment orchestrator. General internet browsing uses Browser Use cloud where practical.
 
@@ -68,6 +68,8 @@ flowchart TD
 Keep Paperclip agent IDs, harness conversation IDs, workspace IDs, and VM instance IDs separate. An agent can work on several tasks. Bind each execution environment to its company, project, and task workspace. Permit one writer per workspace initially. Use independent worktrees for concurrent tasks.
 
 ## Environment orchestrator service
+
+Implement orchestration and VM lifecycle in Rust. Keep service source in its own repository. Keep machine-specific guest and network modules in the Nix configuration repository. Pin the service source by commit.
 
 Run one persistent systemd service on `mbp-agent`. Package the service and its configuration through Nix. The service remains available when all microVMs sleep. Paperclip manages agent work. The orchestrator manages execution environments.
 
@@ -288,11 +290,11 @@ Open decisions include the default harness, supported toolchains, idle timeouts,
 
 ## References
 
-- [Existing Firecracker notes](README.md), [browser demonstration evidence](screenshots/demo-results.json), and [update research](updates.md).
+- [Service implementation](../README.md) and [update research](updates.md). Desktop demonstration evidence remains in `~/Docs/firecracker/screenshots/` on the deployment host.
 - [Codex source](https://github.com/openai/codex), [environment configuration](https://github.com/openai/codex/blob/main/codex-rs/exec-server/src/environment_toml.rs), and [filesystem abstraction](https://github.com/openai/codex/blob/main/codex-rs/file-system/src/environment_accessor.rs).
 - [Pi](https://pi.dev/) and [Rust Pi](https://github.com/Dicklesworthstone/pi_agent_rust). Rust Pi does not currently target strict TypeScript Pi compatibility. Check compatibility during evaluation.
 - Paperclip [external adapters](https://github.com/paperclipai/paperclip/blob/master/docs/adapters/external-adapters.md), [Codex adapter](https://github.com/paperclipai/paperclip/tree/master/packages/adapters/codex-local), and [Pi adapter](https://github.com/paperclipai/paperclip/tree/master/packages/adapters/pi-local).
 - Browser Use [remote browsers](https://docs.browser-use.com/open-source/customize/browser/remote) and [API authentication](https://docs.browser-use.com/cloud/api-reference).
 - [Borg repository internals](https://borgbackup.readthedocs.io/en/stable/internals.html) and [restic chunk deduplication](https://restic.net/blog/2015-09-12/restic-foundation1-cdc/).
 
-Writing follows the [installed ASD-STE100 skill](/home/agent/.codex/skills/asd-ste100/SKILL.md). The document uses its structural rules and plain-word guidance. It does not claim compliance with the official ASD dictionary.
+Writing follows the [installed ASD-STE100 skill](https://raw.githubusercontent.com/danyuchn/asd-ste100-skill/refs/heads/master/SKILL.md). The document uses its structural rules and plain-word guidance. It does not claim compliance with the official ASD dictionary.
