@@ -2,6 +2,7 @@
 """Run a host Codex harness with one remote-only Firecracker environment."""
 
 import fcntl
+import contextlib
 import http.client
 import json
 import os
@@ -128,12 +129,10 @@ code_mode_host = true
 multi_agent = false
 '''
     if paperclip_context:
-        config += '\n[mcp_servers.paperclip]\n'
-        config += f'command = {json.dumps(sys.executable)}\n'
-        config += f'args = [{json.dumps(str(Path(__file__).with_name("paperclip_mcp.py")))}]\n'
-        config += '\n[mcp_servers.paperclip.env]\n'
-        for name, value in paperclip_context.items():
-            config += f'{name} = {json.dumps(value)}\n'
+        config += '\n[mcp_servers.paperclip]\nrequired = true\n'
+        config += f'url = {json.dumps(paperclip_context["url"])}\n'
+        config += '\n[mcp_servers.paperclip.http_headers]\n'
+        config += f'Authorization = {json.dumps("Bearer " + paperclip_context["capability"])}\n'
     return config
 
 
@@ -226,7 +225,7 @@ def main(argv=None, paperclip_context=None):
     state_home = service_home / "harnesses" / workspace
     private_directory(state_home)
     lock_path = state_home / "launcher.lock"
-    with lock_path.open("a") as lock:
+    with lock_path.open("a") as lock, contextlib.ExitStack() as cleanup:
         lock_path.chmod(0o600)
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -234,7 +233,11 @@ def main(argv=None, paperclip_context=None):
             raise RuntimeError("Another harness already owns this workspace") from error
         binding = workspace_binding(workspace, service_home / "control.sock")
         atomic_private_write(state_home / "environments.toml", environments_config(binding))
-        atomic_private_write(state_home / "config.toml", harness_config(paperclip_context))
+        bridge = None
+        if paperclip_context:
+            import paperclip_mcp
+            bridge = cleanup.enter_context(paperclip_mcp.http_bridge(paperclip_context))
+        atomic_private_write(state_home / "config.toml", harness_config(bridge))
         key_path = host_home / ".config/desktop-broker/inference-key"
         if key_path.is_symlink() or key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:
             raise RuntimeError("The inference key file must be owned by this user with mode 0600")

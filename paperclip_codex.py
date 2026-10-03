@@ -46,6 +46,24 @@ def paperclip_api_origin(configured_origin, supplied_origin, bridge_mode):
     return supplied_origin.rstrip("/")
 
 
+def remove_staged_authentication_marker(home, host_home, run):
+    # This managed launcher never uses Paperclip's staged authentication. Remove
+    # only our marker so Paperclip does not copy it into its shared auth store.
+    root = host_home / ".local/share/environment-orchestrator/paperclip-staging/.paperclip-runtime/runs" / run
+    directory = Path(home).resolve()
+    if not directory.is_relative_to(root.resolve()):
+        raise RuntimeError("Paperclip staged authentication is outside the current run")
+    path = directory / "auth.json"
+    if not path.exists():
+        return
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise RuntimeError("Paperclip authentication marker must be an owned regular file")
+    auth = json.loads(path.read_text())
+    if auth.get("OPENAI_API_KEY") != "sk-managed-by-environment-orchestrator" or auth.get("tokens"):
+        raise RuntimeError("The managed Paperclip launcher accepts its authentication marker only")
+    path.unlink()
+
+
 def main():
     if sys.argv[1:] in (["--version"], ["-V"]):
         return subprocess.call(["codex", "--version"])
@@ -61,7 +79,9 @@ def main():
     context = {"PAPERCLIP_COMPANY_ID":company, "PAPERCLIP_AGENT_ID":agent,
                "PAPERCLIP_RUN_ID":run, "PAPERCLIP_API_KEY":key,
                "PAPERCLIP_API_URL":paperclip_api_origin(config["base_url"], os.environ.get("PAPERCLIP_API_URL", ""), os.environ.get("PAPERCLIP_API_BRIDGE_MODE", ""))}
-    return codex.main(["--paperclip", company, agent, *arguments_for_managed_codex(sys.argv[1:])], context)
+    arguments = arguments_for_managed_codex(sys.argv[1:])
+    remove_staged_authentication_marker(os.environ["CODEX_HOME"], Path.home(), run)
+    return codex.main(["--paperclip", company, agent, *arguments], context)
 
 
 if __name__ == "__main__":
