@@ -6,6 +6,7 @@ use reqwest::{Client, Method};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -29,6 +30,7 @@ pub struct Vm {
     child_identity: Option<Value>,
     lifecycle_error: Option<String>,
     api: Client,
+    api_directory: File,
     // Keep this descriptor open for the lifetime of this VM controller.
     _lock: File,
 }
@@ -191,10 +193,15 @@ fn milliseconds(start: Instant) -> f64 {
     (start.elapsed().as_secs_f64() * 100_000.0).round() / 100.0
 }
 
-fn firecracker_client(state: &Path) -> Result<Client> {
+fn firecracker_client(directory: &File) -> Result<Client> {
     Ok(Client::builder()
         .no_proxy()
-        .unix_socket(state.join("firecracker.sock"))
+        // AF_UNIX limits the socket address to 108 bytes. A directory fd keeps
+        // long workspace paths private and avoids a global short-path alias.
+        .unix_socket(format!(
+            "/proc/self/fd/{}/firecracker.sock",
+            directory.as_raw_fd()
+        ))
         .timeout(Duration::from_secs(120))
         .build()?)
 }
@@ -228,7 +235,8 @@ impl Vm {
             ),
             "Unknown VM metadata state"
         );
-        let api = firecracker_client(&config.state)?;
+        let api_directory = File::open(&config.state)?;
+        let api = firecracker_client(&api_directory)?;
         Ok(Self {
             config,
             meta,
@@ -236,6 +244,7 @@ impl Vm {
             child_identity: None,
             lifecycle_error: None,
             api,
+            api_directory,
             _lock: lock,
         })
     }
@@ -356,7 +365,7 @@ impl Vm {
             fs::remove_file(&socket)?;
         }
         // Never reuse a pooled Unix-socket connection from the previous VMM.
-        self.api = firecracker_client(&self.config.state)?;
+        self.api = firecracker_client(&self.api_directory)?;
         let log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -828,5 +837,41 @@ mod tests {
         assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
         assert!(!directory.path().join("state.tmp").exists());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod long_socket_path_tests {
+    use super::*;
+    #[tokio::test]
+    async fn api_connects_when_workspace_socket_path_exceeds_unix_limit() {
+        use std::os::unix::net::UnixListener;
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary
+            .path()
+            .join("a".repeat(80))
+            .join("pc-400622289f8d42c8a3662a401bbb3bcf");
+        fs::create_dir_all(&state).unwrap();
+        assert!(state.join("firecracker.sock").as_os_str().len() > 108);
+        let directory = File::open(&state).unwrap();
+        let address = format!("/proc/self/fd/{}/firecracker.sock", directory.as_raw_fd());
+        let listener = UnixListener::bind(address).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+        });
+        let response = firecracker_client(&directory)
+            .unwrap()
+            .get("http://localhost/vm")
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        assert_eq!(response.text().await.unwrap(), "{}");
+        server.join().unwrap();
     }
 }
