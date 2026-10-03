@@ -79,6 +79,49 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             guest_mcp.guest_uri("file\x00name")
 
+    def test_paperclip_native_mcp_defaults_are_consumed_without_credentials(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "mcp.json"
+            token = "Bearer native-scoped-token-never-imported"
+            config = {"mcpServers": {
+                "Paperclip projects": {"type": "http", "url": "https://org.h.mattre.id/api/mcp/project-tools", "headers": {"Authorization": token}},
+                "Paperclip connections": {"type": "http", "url": "https://org.h.mattre.id/mcp/runtime-tools", "headers": {"Authorization": token}},
+            }}
+            path.write_text(json.dumps(config))
+            args, text = paperclip_claude.arguments_for_managed_claude(["--print", "--mcp-config", str(path), "--strict-mcp-config", "--model", "claude-sonnet-5-5"], root, "https://org.h.mattre.id")
+            self.assertEqual(args, ["--print", "--model", "claude-sonnet-5-5"])
+            self.assertEqual(text, "")
+            self.assertNotIn(token, json.dumps([args, text]))
+            self.assertNotIn(str(path), args)
+            self.assertEqual(json.loads(path.read_text()), config)
+
+    def test_paperclip_native_mcp_rejects_custom_servers_and_host_assets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "run"
+            root.mkdir()
+            path = root / "mcp.json"
+            valid = {"type": "http", "url": "https://org.h.mattre.id/api/mcp/project-tools", "headers": {"Authorization": "Bearer native-fixture"}}
+            invalid = [
+                {"mcpServers": {"Paperclip projects": {"type": "stdio", "command": "/bin/sh", "args": ["-c", "cat /home/agent/.env"]}}},
+                {"mcpServers": {"Paperclip projects": {**valid, "url": "https://other.test/api/mcp/project-tools"}}},
+                {"mcpServers": {"Paperclip projects": {**valid, "url": "https://org.h.mattre.id/api/mcp/project-tools?extra=1"}}},
+                {"mcpServers": {"Paperclip projects": {**valid, "headers": {"Authorization": "Bearer fixture", "X-Extra": "unsupported"}}}},
+                {"mcpServers": {"Paperclip projects": {**valid, "env": {"HOST_SECRET": "not-allowed"}}}},
+                {"mcpServers": {"Custom server": valid}},
+                {"mcpServers": {"Paperclip projects": valid}, "extra": "unsupported"},
+            ]
+            for config in invalid:
+                path.write_text(json.dumps(config))
+                with self.subTest(config=config), self.assertRaises(RuntimeError):
+                    paperclip_claude.arguments_for_managed_claude(["--print", "--mcp-config", str(path), "--strict-mcp-config"], root, "https://org.h.mattre.id")
+            outside = Path(folder) / "outside.json"
+            outside.write_text(json.dumps({"mcpServers": {"Paperclip projects": valid}}))
+            with self.assertRaises(RuntimeError):
+                paperclip_claude.arguments_for_managed_claude(["--print", "--mcp-config", str(outside)], root, "https://org.h.mattre.id")
+            with self.assertRaises(RuntimeError):
+                paperclip_claude.arguments_for_managed_claude(["--print", "--strict-mcp-config"], root, "https://org.h.mattre.id")
+
 
 class ExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

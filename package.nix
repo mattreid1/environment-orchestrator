@@ -4,7 +4,7 @@ let
   path = pkgs.lib.makeBinPath [ python codex claude pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
 in pkgs.rustPlatform.buildRustPackage {
   pname = "environment-orchestrator";
-  version = "0.4.0";
+  version = "0.4.1";
   src = ./rust;
   cargoLock.lockFile = ./rust/Cargo.lock;
   nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];

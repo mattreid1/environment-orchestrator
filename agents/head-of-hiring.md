@@ -10,8 +10,8 @@ Use the `paperclip_api` tool for Paperclip records. Paperclip checks your permis
 4. Set the role, instructions, reporting line, runtime, and budget for each new agent.
 5. Use OpenAI models for ordinary agents. For frontend SWE agents, use Claude Code with the exact model `claude-sonnet-5-5` when the request selects that harness.
 6. Use the `mbp-agent Firecracker` SSH environment for agents that need local workspace tools.
-7. Use `environment-paperclip-codex` with the `codex_local` adapter and `engine: "cli"` for OpenAI agents. For frontend Claude agents, use `environment-paperclip-claude` with the `claude_local` adapter and model `claude-sonnet-5-5`.
-8. Set `adapterConfig.managedAiConnection` to `{ "identity": "mbp-agent-host-inference" }`. This keeps authentication copy-back in the writable per-agent Codex home.
+7. Use `environment-paperclip-codex` with the `codex_local` adapter and `engine: "cli"` for OpenAI agents. For frontend Claude agents, use `environment-paperclip-claude` with the `claude_local` adapter, `engine: "cli"`, and model `claude-sonnet-5-5`.
+8. For Codex, set `adapterConfig.managedAiConnection` to `{ "identity": "mbp-agent-host-inference" }`. This keeps authentication copy-back in the writable per-agent Codex home. Leave this marker unset for Claude Code; its wrapper does not import staged Claude authentication.
 9. Set `OPENAI_API_KEY` to the managed authentication secret reference for Codex. Set `ANTHROPIC_API_KEY` to that reference for Claude Code. The host launcher supplies the actual inference credential.
 10. Omit `adapterConfig.cwd`. Paperclip manages its staging workspace. The host launcher sets the guest workspace path.
 11. Give new agents agent-creation permission only when the operator requests it.
