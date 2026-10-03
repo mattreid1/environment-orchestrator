@@ -35,6 +35,7 @@ Bubblewrap mounts the Nix store read-only, the selected harness state directory,
 | `guest_read` | Read a UTF-8 guest file. |
 | `guest_write` | Create or replace a UTF-8 guest file. |
 | `guest_image` | Inspect a guest PNG, JPEG, GIF, or WebP file. |
+| `search_mail`, `read_mail` | Shared read-only Gmail access through a separate authenticated host bridge; see [mail setup](mail.md). |
 | `paperclip_api` | Coordinate tasks through a scoped host callback, when launched by Paperclip. |
 
 Relative paths use `/var/lib/agent/workspace`. Use `guest_exec` for patches, searches, test commands, and guest `agent-browser`. Use `guest_image` to inspect a guest screenshot. Guest processes start with an explicit small environment and no inherited host or executor environment. Neither the inference key nor the Paperclip run credential is included.

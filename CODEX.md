@@ -46,3 +46,7 @@ Run `nix shell .#test-tools -c python test_codex.py` to check configuration and 
 The initial live check passed on 2026-10-03 with workspace `swe-demo-a`. Codex reported guest hostname `agent-swe-0` and the guest `AGENTS.md` marker. Native `apply_patch` changed a guest file. Native `view_image` returned a guest PNG. Three host credential paths and three inference key variables were absent. A separate RPC read checked the final guest file contents. Evidence is in `~/Docs/firecracker/codex-routing-proof.jsonl` and `codex-routing-tool-calls.json`.
 
 Local source references: `exec-server/src/environment_toml.rs`, `exec-server-protocol/src/protocol.rs`, `exec-server/src/server/session_registry.rs`, `core/src/agents_md.rs`, `core/src/tools/handlers/apply_patch.rs`, and `core/src/tools/handlers/view_image.rs` in the OpenAI Codex repository.
+
+## Shared mail tools
+
+The launcher adds a required `mail` HTTP MCP connection with `search_mail` and `read_mail`. Its temporary loopback capability is the only mail-related secret in the harness configuration. Gmail credentials remain in the host bridge. See [shared mail tools](docs/mail.md) for one-time authentication and limits.

@@ -116,6 +116,8 @@ Keep the runtime directory private and outside Git. RAM checkpoints can contain 
 
 The current guest image has an immutable Nix store. Add toolchains through its NixOS configuration until durable package installation exists. Automated image migration, maintenance queues, and agent update notices remain later milestones.
 
+Shared read-only Gmail tools are automatically available to both managed harnesses. Configure the account once on the host with `environment-mail setup`; see [shared mail tools](docs/mail.md). The guest profiles include an unauthenticated `gh` CLI.
+
 Paperclip discovery and the SSH Codex launcher are described in [Paperclip integration](docs/paperclip.md). Profile selection is described in [workspace profiles](docs/workspace-profiles.md). The [Claude frontend launcher](docs/CLAUDE.md) uses Sonnet 5.5 with guest MCP tools. Browser Use sharing and NAS backups remain later work. NAS backups must deduplicate shared image files and repeated workspace data. Do not create an independent full image copy for every agent. See the [PRD](docs/PRD.md) and [update design](docs/updates.md).
 
 ## Validation

@@ -99,7 +99,7 @@ def environments_config(binding):
     )
 
 
-def harness_config(paperclip_context=None):
+def harness_config(paperclip_context=None, mail_context=None):
     config = f'''model = "{DEFAULT_MODEL}"
 model_provider = "environment_inference"
 approval_policy = "never"
@@ -136,6 +136,11 @@ multi_agent = false
         config += f'url = {json.dumps(paperclip_context["url"])}\n'
         config += '\n[mcp_servers.paperclip.http_headers]\n'
         config += f'Authorization = {json.dumps("Bearer " + paperclip_context["capability"])}\n'
+    if mail_context:
+        config += '\n[mcp_servers.mail]\nrequired = true\n'
+        config += f'url = {json.dumps(mail_context["url"])}\n'
+        config += '\n[mcp_servers.mail.http_headers]\n'
+        config += f'Authorization = {json.dumps("Bearer " + mail_context["capability"])}\n'
     return config
 
 
@@ -240,7 +245,9 @@ def main(argv=None, paperclip_context=None):
         if paperclip_context:
             import paperclip_mcp
             bridge = cleanup.enter_context(paperclip_mcp.http_bridge(paperclip_context))
-        atomic_private_write(state_home / "config.toml", harness_config(bridge))
+        import mail_mcp
+        mail_bridge = cleanup.enter_context(mail_mcp.http_bridge())
+        atomic_private_write(state_home / "config.toml", harness_config(bridge, mail_bridge))
         key_path = host_home / ".config/desktop-broker/inference-key"
         if key_path.is_symlink() or key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:
             raise RuntimeError("The inference key file must be owned by this user with mode 0600")
