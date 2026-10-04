@@ -1,0 +1,38 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AIME host identity and administrator role for isolated SWE workspaces",
+  "Resources": {
+    "HostUser": {
+      "Type": "AWS::IAM::User",
+      "Properties": {"UserName": "aime-orchestrator", "Tags": [{"Key": "Purpose", "Value": "AIME SWE credential issuer"}]}
+    },
+    "AgentRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "AIMEAgentsAdmin",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{"Effect": "Allow", "Principal": {"AWS": {"Fn::GetAtt": ["HostUser", "Arn"]}}, "Action": "sts:AssumeRole"}]
+        },
+        "ManagedPolicyArns": ["arn:aws:iam::aws:policy/AdministratorAccess"],
+        "Tags": [{"Key": "Purpose", "Value": "AIME SWE temporary sessions"}]
+      }
+    },
+    "AssumeRolePermission": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "AssumeAIMEAgentsAdmin",
+        "Users": [{"Ref": "HostUser"}],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": {"Fn::GetAtt": ["AgentRole", "Arn"]}}]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "HostUserName": {"Value": {"Ref": "HostUser"}},
+    "AgentRoleArn": {"Value": {"Fn::GetAtt": ["AgentRole", "Arn"]}}
+  }
+}

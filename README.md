@@ -127,3 +127,9 @@ Paperclip discovery and the SSH Codex launcher are described in [Paperclip integ
 Measure service PSS separately from guest RAM and checkpoint page cache. Cgroup memory includes reclaimable filesystem cache. It does not represent the service process footprint alone.
 
 See [measured Rust results](docs/validation.md) for memory, latency, and live verification.
+# AWS access
+
+SWE and frontend guests can use a shared AIME AWS administrator role through
+temporary STS credentials. The host checks company, workspace profile, source
+address, and a private capability before issuing credentials. See
+[AWS setup and limits](docs/aws.md). Default region: Canada Central.

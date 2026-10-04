@@ -1,17 +1,17 @@
 { pkgs, codex ? pkgs.codex, claude ? pkgs.claude-code }:
 let
   python = pkgs.python3.withPackages (p: [ p.aiohttp ]);
-  path = pkgs.lib.makeBinPath [ python codex claude pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
+  path = pkgs.lib.makeBinPath [ python codex claude pkgs.awscli2 pkgs.bubblewrap pkgs.openssh pkgs.coreutils pkgs.nix pkgs.e2fsprogs ];
 in pkgs.rustPlatform.buildRustPackage {
   pname = "environment-orchestrator";
-  version = "0.4.4";
+  version = "0.4.5";
   src = ./rust;
   cargoLock.lockFile = ./rust/Cargo.lock;
   nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
   buildInputs = [ pkgs.sqlite ];
   nativeCheckInputs = [ pkgs.nodejs ];
   postCheck = ''
-    PYTHONPATH=${./.} ${python}/bin/python -m unittest test_mail test_codex
+    PYTHONPATH=${./.} ${python}/bin/python -m unittest test_aws test_mail test_codex
     node --check web/app.js
     node -e 'const fs = require("node:fs"); for (const match of fs.readFileSync("web/index.html", "utf8").matchAll(/pattern="([^"]*)"/g)) new RegExp(match[1], "v");'
   '';
@@ -25,9 +25,10 @@ in pkgs.rustPlatform.buildRustPackage {
     cp ${./paperclip_claude.py} $out/lib/environment-orchestrator/paperclip_claude.py
     cp ${./guest_mcp.py} $out/lib/environment-orchestrator/guest_mcp.py
     cp ${./mail_mcp.py} $out/lib/environment-orchestrator/mail_mcp.py
+    cp ${./aws_bridge.py} $out/lib/environment-orchestrator/aws_bridge.py
     wrapProgram $out/bin/environment-orchestrator --prefix PATH : ${path}
     ln -s environment-orchestrator $out/bin/environment-orchestrator-service
-    for entry in 'mail_mcp environment-mail' 'cli environment-vm' 'codex environment-codex' 'paperclip_codex environment-paperclip-codex' 'claude environment-claude' 'paperclip_claude environment-paperclip-claude'; do
+    for entry in 'aws_bridge environment-aws' 'mail_mcp environment-mail' 'cli environment-vm' 'codex environment-codex' 'paperclip_codex environment-paperclip-codex' 'claude environment-claude' 'paperclip_claude environment-paperclip-claude'; do
       set -- $entry
       makeWrapper ${python}/bin/python3 $out/bin/$2 --add-flags $out/lib/environment-orchestrator/$1.py --prefix PATH : ${path}
     done

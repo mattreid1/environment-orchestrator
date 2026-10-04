@@ -127,6 +127,8 @@ def main(argv=None, paperclip_context=None, instructions=""):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("Another harness already owns this workspace") from None
+        import aws_bridge
+        aws_bridge.provision(binding, paperclip[0] if paperclip else None)
         key_path = host_home / ".config/desktop-broker/inference-key"
         if key_path.is_symlink() or key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:
             raise RuntimeError("The inference key file must be owned by this user with mode 0600")

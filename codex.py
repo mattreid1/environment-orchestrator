@@ -240,6 +240,8 @@ def main(argv=None, paperclip_context=None):
         except BlockingIOError as error:
             raise RuntimeError("Another harness already owns this workspace") from error
         binding = workspace_binding(workspace, service_home / "control.sock", profile=os.environ.get("ENVIRONMENT_PROFILE"))
+        import aws_bridge
+        aws_bridge.provision(binding, paperclip[0] if paperclip else None)
         atomic_private_write(state_home / "environments.toml", environments_config(binding))
         bridge = None
         if paperclip_context:
